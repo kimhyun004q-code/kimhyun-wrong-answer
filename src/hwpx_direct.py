@@ -35,7 +35,7 @@ def _is_empty_layout_para(paragraph) -> bool:
     return True
 
 
-def _section_template(root):
+def _section_template(root, col_count: int = 2):
     source = None
     for p in root:
         if p.xpath(".//hp:secPr", namespaces=NS):
@@ -66,11 +66,10 @@ def _section_template(root):
         if not keep:
             p.remove(child)
 
-    # 결과물은 2단 고정: 왼쪽 단 1문제 / 오른쪽 단 1문제.
     for col_pr in p.xpath(".//hp:colPr", namespaces=NS):
         col_pr.set("type", "NEWSPAPER")
         col_pr.set("layout", "LEFT")
-        col_pr.set("colCount", "2")
+        col_pr.set("colCount", str(max(1, int(col_count))))
         col_pr.set("sameSz", "1")
         if not col_pr.get("sameGap"):
             col_pr.set("sameGap", "1000")
@@ -118,13 +117,50 @@ def _label_para(
     return p
 
 
-def _append_endnote_page_separator(root, para_pr: str, char_pr: str) -> None:
-    """문제 본문과 문서 끝 미주 사이에 실제 본문 쪽 나누기를 넣는다.
+def _cover_para(text: str, char_pr: str = "8", para_pr: str = "14"):
+    """표지용 가운데 정렬 문단. 원본 HWPX에 이미 존재하는 스타일 ID를 재사용한다."""
+    return _label_para(para_pr, char_pr, text)
 
-    HWPX의 endNote 내부 문단 pageBreak는 미주 배치 단계에서 무시될 수 있다.
-    따라서 END_OF_DOCUMENT 미주보다 앞선 마지막 본문 문단 자체를 새 페이지에서
-    시작하도록 만들어, 모든 미주 해설이 문제 다음 새 페이지에 놓이게 한다.
-    """
+
+def _append_cover(
+    root,
+    cover_template,
+    problem_template,
+    student: str,
+    class_name: str,
+    round_name: str,
+) -> None:
+    # 1페이지는 단일단 표지 전용 구역으로 만든다.
+    root.append(deepcopy(cover_template))
+
+    # 상단 여백
+    for _ in range(5):
+        root.append(_cover_para("", "8", "14"))
+
+    class_text = (class_name or "").strip() or "-"
+    round_text = (round_name or "").strip() or "-"
+    root.append(_cover_para(f"반명  {class_text}    ·    회차  {round_text}", "8", "14"))
+
+    for _ in range(4):
+        root.append(_cover_para("", "8", "14"))
+
+    # 학생 이름을 가장 크게 표시한다.
+    root.append(_cover_para(f"{student}(오답노트)", "13", "14"))
+
+    for _ in range(5):
+        root.append(_cover_para("", "8", "14"))
+
+    root.append(_cover_para("성적이 오르는 신뢰의 이름 김현수학", "8", "14"))
+
+    # 2페이지부터 새로운 2단 구역으로 시작한다.
+    problem_start = deepcopy(problem_template)
+    problem_start.set("pageBreak", "1")
+    problem_start.set("columnBreak", "0")
+    root.append(problem_start)
+
+
+def _append_endnote_page_separator(root, para_pr: str, char_pr: str) -> None:
+    """문제 본문과 문서 끝 미주 사이에 실제 본문 쪽 나누기를 넣는다."""
     separator = _label_para(
         para_pr,
         char_pr,
@@ -135,7 +171,6 @@ def _append_endnote_page_separator(root, para_pr: str, char_pr: str) -> None:
     separator.set("id", "2147483647")
     root.append(separator)
 
-    # 미주 안쪽에는 별도 쪽 나누기를 두지 않는다. 첫 미주부터 자연스럽게 이어 붙인다.
     for note in root.xpath(".//hp:endNote", namespaces=NS):
         paras = note.xpath("./hp:subList/hp:p", namespaces=NS)
         if paras:
@@ -159,7 +194,8 @@ class HwpxExam:
             self.root = etree.fromstring(z.read(SECTION_PATH))
 
         self.para_pr, self.char_pr = _style_ids(self.root)
-        self.template = _section_template(self.root)
+        self.cover_template = _section_template(self.root, 1)
+        self.problem_template = _section_template(self.root, 2)
         self.answer_index = len(self.root)
         anchors: list[int] = []
 
@@ -185,7 +221,6 @@ class HwpxExam:
                 anchors = anchors[:requested]
             self.question_count = requested
         else:
-            # 수기 모드에서는 엑셀 없이 HWPX 자체에서 전체 문항 수를 자동 인식한다.
             self.question_count = len(anchors)
 
         self.anchors = anchors
@@ -200,7 +235,6 @@ class HwpxExam:
                     continue
 
                 # 문항의 미주(endNote)를 제거하지 않는다.
-                # 미주 본문도 ctrl/endNote 내부에 있으므로 문항 문단을 통째로 보존한다.
                 cp = deepcopy(paragraph)
                 cp.set("pageBreak", "0")
                 cp.set("columnBreak", "0")
@@ -210,17 +244,30 @@ class HwpxExam:
                 raise ValueError(f"{q}번 문항 내용을 추출하지 못했습니다.")
             self.blocks[q] = items
 
-    def _build_section(self, student: str, test_date: str, wrongs: list[int]) -> bytes:
+    def _build_section(
+        self,
+        student: str,
+        test_date: str,
+        wrongs: list[int],
+        class_name: str = "",
+        round_name: str = "",
+    ) -> bytes:
         new_root = deepcopy(self.root)
         for child in list(new_root):
             new_root.remove(child)
-        new_root.append(deepcopy(self.template))
 
-        # 정확한 2단 배치:
-        # 1번째 오답 -> 1페이지 왼쪽 단
-        # 2번째 오답 -> 같은 페이지 오른쪽 단
-        # 3번째 오답 -> 2페이지 왼쪽 단
-        # 4번째 오답 -> 같은 페이지 오른쪽 단 ...
+        _append_cover(
+            new_root,
+            self.cover_template,
+            self.problem_template,
+            student,
+            class_name,
+            round_name,
+        )
+
+        # 2페이지부터 정확한 2단 배치:
+        # 1번째 오답 -> 왼쪽 단 / 2번째 -> 오른쪽 단
+        # 3번째 -> 다음 페이지 왼쪽 / 4번째 -> 오른쪽 ...
         for idx, q in enumerate(wrongs):
             if q not in self.blocks:
                 raise ValueError(f"시험지에서 {q}번 문항을 찾지 못했습니다.")
@@ -240,8 +287,6 @@ class HwpxExam:
             for p in self.blocks[q]:
                 new_root.append(deepcopy(p))
 
-        # 핵심: 마지막 문제 뒤의 '본문'에 실제 쪽 나누기를 추가한다.
-        # 문서 끝 미주는 이 새 페이지 다음에 렌더링된다.
         _append_endnote_page_separator(new_root, self.para_pr, self.char_pr)
 
         return etree.tostring(
@@ -251,14 +296,29 @@ class HwpxExam:
             standalone=True,
         )
 
-    def generate(self, output_path: str, student: str, test_date: str, wrongs: list[int]) -> str:
+    def generate(
+        self,
+        output_path: str,
+        student: str,
+        test_date: str,
+        wrongs: list[int],
+        class_name: str = "",
+        round_name: str = "",
+    ) -> str:
         wrongs = sorted({int(q) for q in wrongs if 1 <= int(q) <= self.question_count})
         if not wrongs:
             raise ValueError(f"{student}: 오답 문항이 없습니다.")
 
-        section_data = self._build_section(student, test_date, wrongs)
+        section_data = self._build_section(
+            student,
+            test_date,
+            wrongs,
+            class_name=class_name,
+            round_name=round_name,
+        )
         preview = (
-            f"{student}\n시험일 {test_date}\n오답문항: {', '.join(map(str, wrongs))}\n미주 포함 / 문제 뒤 실제 쪽 나누기\n"
+            f"{student}(오답노트)\n반명 {class_name}\n회차 {round_name}\n"
+            f"시험일 {test_date}\n오답문항: {', '.join(map(str, wrongs))}\n"
         ).encode("utf-8")
 
         out = Path(output_path)
@@ -286,6 +346,9 @@ class HwpxExam:
                 raise ValueError(
                     f"생성 결과의 미주 수({len(endnotes)})가 오답 문항 수({len(wrongs)})와 일치하지 않습니다."
                 )
+            section_count = len(check_root.xpath(".//hp:secPr", namespaces=NS))
+            if section_count < 2:
+                raise ValueError("표지와 문제를 분리하는 구역 설정 검증에 실패했습니다.")
             top_paras = [x for x in list(check_root) if etree.QName(x).localname == "p"]
             if not top_paras or top_paras[-1].get("pageBreak") != "1":
                 raise ValueError("문제와 미주 사이 실제 쪽 나누기 검증에 실패했습니다.")
@@ -300,6 +363,8 @@ def generate_student_files(
     students: list[dict],
     question_count: int,
     test_date: str,
+    class_name: str = "",
+    round_name: str = "",
     progress=None,
 ) -> list[str]:
     exam = HwpxExam(exam_path, question_count)
@@ -309,7 +374,14 @@ def generate_student_files(
     for i, s in enumerate(targets, 1):
         student = str(s["name"]).strip()
         out = Path(result_dir) / f"{_safe_name(student)}_{_safe_name(test_date)}_오답.hwpx"
-        exam.generate(str(out), student, test_date, list(s["wrongs"]))
+        exam.generate(
+            str(out),
+            student,
+            test_date,
+            list(s["wrongs"]),
+            class_name=class_name,
+            round_name=round_name,
+        )
         results.append(str(out))
         if progress:
             progress(i, total, student)
