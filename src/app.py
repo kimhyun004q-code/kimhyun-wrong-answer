@@ -12,7 +12,7 @@ from tkinterdnd2 import TkinterDnD, DND_FILES
 from excel_reader import read_workbook
 from hwpx_direct import HwpxExam, generate_student_files
 
-APP_TITLE = "김현수학 개인별오답 생성기 - HWPX 초고속+수기"
+APP_TITLE = "김현수학 개인별오답 생성기 - HWPX 초고속+수기+표지"
 
 
 def safe_name(s: str) -> str:
@@ -46,12 +46,30 @@ def parse_manual_questions(text: str) -> list[int]:
     return sorted(set(nums))
 
 
+def infer_cover_fields(text: str) -> tuple[str, str]:
+    """시험명/파일명에서 '미적분2 1회차' 같은 반명과 회차를 최대한 자동 추정한다."""
+    raw = (text or "").strip()
+    if not raw:
+        return "", ""
+    stem = Path(raw).stem
+    stem = re.sub(r"^\s*\d{6}\s*[-_ ]*", "", stem).strip()
+    round_name = ""
+    m = re.search(r"(\d+\s*회차)", stem)
+    if m:
+        round_name = re.sub(r"\s+", "", m.group(1))
+        stem = (stem[:m.start()] + " " + stem[m.end():]).strip()
+    stem = re.sub(r"\bTEST\b", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"[-_]+", " ", stem)
+    stem = re.sub(r"\s+", " ", stem).strip()
+    return stem, round_name
+
+
 class App(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("1030x835")
-        self.minsize(920, 740)
+        self.geometry("1050x900")
+        self.minsize(930, 790)
         self.data = None
         self.last_result_dir = None
         self.mode = tk.StringVar(value="excel")
@@ -60,6 +78,8 @@ class App(TkinterDnD.Tk):
         self.output_dir = tk.StringVar(value=str(Path.home() / "Desktop" / "개인별오답"))
         self.test_name = tk.StringVar()
         self.test_date = tk.StringVar()
+        self.class_name = tk.StringVar()
+        self.round_name = tk.StringVar()
         self.manual_student = tk.StringVar()
         self.manual_questions = tk.StringVar()
         self.status = tk.StringVar(value="엑셀 자동 또는 수기 입력 방식을 선택하세요.")
@@ -72,7 +92,7 @@ class App(TkinterDnD.Tk):
         ttk.Label(outer, text=APP_TITLE, font=("맑은 고딕", 18, "bold")).pack(anchor="w")
         ttk.Label(
             outer,
-            text="기존 엑셀 자동 방식은 그대로 유지하고, 필요할 때 학생이름과 문항번호를 직접 입력할 수 있습니다.",
+            text="첫 페이지 표지 + 기존 엑셀 자동/수기 입력/2단 오답/미주 기능을 그대로 사용합니다.",
         ).pack(anchor="w", pady=(2, 8))
 
         mode_box = ttk.LabelFrame(outer, text="생성 방식", padding=(10, 7))
@@ -107,14 +127,28 @@ class App(TkinterDnD.Tk):
         self._row(form, 0, "성적 엑셀", self.excel_path, self._pick_excel)
         self._row(form, 1, "시험지 HWPX", self.hwpx_path, self._pick_hwpx)
         self._row(form, 2, "저장 위치", self.output_dir, self._pick_out)
+
         ttk.Label(form, text="시험명").grid(row=3, column=0, sticky="w", pady=4)
         ttk.Entry(form, textvariable=self.test_name).grid(row=3, column=1, sticky="ew", padx=6, pady=4)
         ttk.Label(form, text="시험일").grid(row=3, column=2, sticky="w", padx=(10, 0), pady=4)
         ttk.Entry(form, textvariable=self.test_date, width=16).grid(row=3, column=3, sticky="w", padx=6, pady=4)
+
+        ttk.Label(form, text="표지 반명").grid(row=4, column=0, sticky="w", pady=4)
+        ttk.Entry(form, textvariable=self.class_name).grid(row=4, column=1, sticky="ew", padx=6, pady=4)
+        ttk.Label(form, text="표지 회차").grid(row=4, column=2, sticky="w", padx=(10, 0), pady=4)
+        ttk.Entry(form, textvariable=self.round_name, width=16).grid(row=4, column=3, sticky="w", padx=6, pady=4)
+        ttk.Label(form, text="※ 자동으로 채워지며 필요하면 직접 수정 가능").grid(row=5, column=1, columnspan=3, sticky="w", padx=6, pady=(0, 4))
         form.columnconfigure(1, weight=1)
 
-        ttk.Label(outer, text="오답 미리보기", font=("맑은 고딕", 10, "bold")).pack(anchor="w", pady=(12, 4))
-        self.tree = ttk.Treeview(outer, columns=("name", "count", "wrong"), show="headings", height=11)
+        cover_box = ttk.LabelFrame(outer, text="표지 미리보기", padding=(10, 7))
+        cover_box.pack(fill="x", pady=(10, 8))
+        ttk.Label(cover_box, textvariable=self.class_name, font=("맑은 고딕", 10, "bold")).pack(side="left")
+        ttk.Label(cover_box, text="   ·   ").pack(side="left")
+        ttk.Label(cover_box, textvariable=self.round_name, font=("맑은 고딕", 10, "bold")).pack(side="left")
+        ttk.Label(cover_box, text="     /     학생이름(오답노트)     /     성적이 오르는 신뢰의 이름 김현수학").pack(side="left")
+
+        ttk.Label(outer, text="오답 미리보기", font=("맑은 고딕", 10, "bold")).pack(anchor="w", pady=(6, 4))
+        self.tree = ttk.Treeview(outer, columns=("name", "count", "wrong"), show="headings", height=10)
         self.tree.heading("name", text="학생명")
         self.tree.heading("count", text="오답수")
         self.tree.heading("wrong", text="오답문항")
@@ -140,6 +174,13 @@ class App(TkinterDnD.Tk):
         ttk.Entry(parent, textvariable=var).grid(row=row, column=1, columnspan=3, sticky="ew", padx=6, pady=4)
         ttk.Button(parent, text="선택", command=command).grid(row=row, column=4, padx=4, pady=4)
 
+    def _set_cover_defaults(self, source_text: str, force: bool = False):
+        cls, rnd = infer_cover_fields(source_text)
+        if cls and (force or not self.class_name.get().strip()):
+            self.class_name.set(cls)
+        if rnd and (force or not self.round_name.get().strip()):
+            self.round_name.set(rnd)
+
     def _mode_changed(self):
         manual = self.mode.get() == "manual"
         state = "normal" if manual else "disabled"
@@ -153,6 +194,8 @@ class App(TkinterDnD.Tk):
                 self.test_date.set(datetime.now().strftime("%Y-%m-%d"))
             if self.hwpx_path.get() and not self.test_name.get():
                 self.test_name.set(Path(self.hwpx_path.get()).stem)
+            if self.hwpx_path.get():
+                self._set_cover_defaults(self.hwpx_path.get())
         else:
             self.status.set("엑셀 자동 모드: 기존처럼 XLSX의 학생별 오답을 그대로 사용합니다.")
             if self.data:
@@ -200,6 +243,7 @@ class App(TkinterDnD.Tk):
                     self.test_name.set(Path(p).stem)
                 if not self.test_date.get() and self.mode.get() == "manual":
                     self.test_date.set(datetime.now().strftime("%Y-%m-%d"))
+                self._set_cover_defaults(p)
             elif ext == ".hwp":
                 self._log("HWP는 사용하지 않습니다. 시험지를 HWPX로 저장해서 넣어주세요.")
         if self.excel_path.get():
@@ -221,6 +265,7 @@ class App(TkinterDnD.Tk):
                 self.test_name.set(Path(p).stem)
             if self.mode.get() == "manual" and not self.test_date.get():
                 self.test_date.set(datetime.now().strftime("%Y-%m-%d"))
+            self._set_cover_defaults(p)
             self._check_hwpx()
 
     def _pick_out(self):
@@ -234,6 +279,7 @@ class App(TkinterDnD.Tk):
             if self.mode.get() == "excel":
                 self.test_name.set(self.data["test_name"])
                 self.test_date.set(self.data["test_date"])
+                self._set_cover_defaults(self.data["test_name"], force=True)
                 self._show_excel_preview()
             self._log(f"엑셀 분석 완료: 학생 {len(self.data['students'])}명 / {self.data['question_count']}문항")
         except Exception as e:
@@ -247,7 +293,7 @@ class App(TkinterDnD.Tk):
                 exam = HwpxExam(self.hwpx_path.get(), int(self.data["question_count"]))
             else:
                 exam = HwpxExam(self.hwpx_path.get(), None)
-            self._log(f"HWPX 문항 확인 완료: {exam.question_count}문항. 한글 실행 없이 바로 생성할 수 있습니다.")
+            self._log(f"HWPX 문항 확인 완료: {exam.question_count}문항. 표지 포함으로 바로 생성할 수 있습니다.")
         except Exception as e:
             messagebox.showerror("HWPX 오류", str(e))
 
@@ -266,6 +312,15 @@ class App(TkinterDnD.Tk):
         self.last_result_dir = result_dir
         return result_dir
 
+    def _cover_values(self) -> tuple[str, str]:
+        class_name = self.class_name.get().strip()
+        round_name = self.round_name.get().strip()
+        if not class_name:
+            class_name = "-"
+        if not round_name:
+            round_name = "-"
+        return class_name, round_name
+
     def _run_manual(self):
         exam_path = self.hwpx_path.get()
         if not Path(exam_path).exists():
@@ -276,6 +331,7 @@ class App(TkinterDnD.Tk):
         wrongs = parse_manual_questions(self.manual_questions.get())
         test_name = self.test_name.get().strip() or Path(exam_path).stem
         test_date = self.test_date.get().strip() or datetime.now().strftime("%Y-%m-%d")
+        class_name, round_name = self._cover_values()
         exam = HwpxExam(exam_path, None)
         invalid = [q for q in wrongs if q > exam.question_count]
         if invalid:
@@ -284,11 +340,18 @@ class App(TkinterDnD.Tk):
             )
         result_dir = self._result_dir(test_name, test_date)
         out = result_dir / f"{safe_name(student)}_{safe_name(test_date)}_오답.hwpx"
-        self._log(f"수기 생성 시작: {student} / {', '.join(map(str, wrongs))}번")
-        exam.generate(str(out), student, test_date, wrongs)
+        self._log(f"수기 생성 시작: {student} / {', '.join(map(str, wrongs))}번 / 표지 포함")
+        exam.generate(
+            str(out),
+            student,
+            test_date,
+            wrongs,
+            class_name=class_name,
+            round_name=round_name,
+        )
         self.after(0, lambda: self.pb.configure(value=100))
         self._log(f"완료: {out.name}")
-        self.after(0, lambda: messagebox.showinfo("완료", f"수기 지정 오답노트를 만들었습니다.\n\n{out}"))
+        self.after(0, lambda: messagebox.showinfo("완료", f"표지 포함 수기 오답노트를 만들었습니다.\n\n{out}"))
 
     def _run_excel(self):
         if not self.data:
@@ -301,12 +364,13 @@ class App(TkinterDnD.Tk):
 
         test_name = self.test_name.get().strip() or self.data["test_name"]
         test_date = self.test_date.get().strip() or self.data["test_date"]
+        class_name, round_name = self._cover_values()
         result_dir = self._result_dir(test_name, test_date)
         targets = [s for s in self.data["students"] if s["wrongs"]]
         if not targets:
             raise RuntimeError("오답이 있는 학생이 없습니다.")
 
-        self._log("엑셀 자동 생성 시작: 한컴 한글은 실행하지 않습니다.")
+        self._log("엑셀 자동 생성 시작: 첫 페이지 표지 포함 / 한컴 한글은 실행하지 않습니다.")
 
         def progress(i, total, student):
             pct = int(i * 100 / max(total, 1))
@@ -319,10 +383,12 @@ class App(TkinterDnD.Tk):
             students=self.data["students"],
             question_count=int(self.data["question_count"]),
             test_date=test_date,
+            class_name=class_name,
+            round_name=round_name,
             progress=progress,
         )
-        self._log(f"완료: 학생별 HWPX {len(files)}개 생성")
-        self.after(0, lambda: messagebox.showinfo("완료", f"학생별 HWPX {len(files)}개를 만들었습니다.\n\n{result_dir}"))
+        self._log(f"완료: 표지 포함 학생별 HWPX {len(files)}개 생성")
+        self.after(0, lambda: messagebox.showinfo("완료", f"표지 포함 학생별 HWPX {len(files)}개를 만들었습니다.\n\n{result_dir}"))
 
     def _run(self):
         try:
