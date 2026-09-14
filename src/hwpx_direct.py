@@ -75,6 +75,16 @@ def _section_template(root):
         if not keep:
             p.remove(child)
 
+    # 결과물은 반드시 2단으로 고정한다.
+    # 첫 오답은 왼쪽 단, 다음 오답은 오른쪽 단에 배치한다.
+    for col_pr in p.xpath(".//hp:colPr", namespaces=NS):
+        col_pr.set("type", "NEWSPAPER")
+        col_pr.set("layout", "LEFT")
+        col_pr.set("colCount", "2")
+        col_pr.set("sameSz", "1")
+        if not col_pr.get("sameGap"):
+            col_pr.set("sameGap", "1000")
+
     p.set("pageBreak", "0")
     p.set("columnBreak", "0")
     p.set("merged", "0")
@@ -92,13 +102,19 @@ def _style_ids(root) -> tuple[str, str]:
     return "0", "0"
 
 
-def _label_para(para_pr: str, char_pr: str, text: str, page_break: bool):
+def _label_para(
+    para_pr: str,
+    char_pr: str,
+    text: str,
+    page_break: bool = False,
+    column_break: bool = False,
+):
     p = etree.Element(f"{{{HP}}}p")
     p.set("id", "2147483648")
     p.set("paraPrIDRef", para_pr)
     p.set("styleIDRef", "0")
     p.set("pageBreak", "1" if page_break else "0")
-    p.set("columnBreak", "0")
+    p.set("columnBreak", "1" if column_break else "0")
     p.set("merged", "0")
     run = etree.SubElement(p, f"{{{HP}}}run")
     run.set("charPrIDRef", char_pr)
@@ -168,16 +184,27 @@ class HwpxExam:
             new_root.remove(child)
         new_root.append(deepcopy(self.template))
 
-        # 2문항씩 한 페이지에 배치한다.
-        # 1·2번 오답은 같은 페이지, 3·4번 오답은 다음 페이지... 방식이다.
-        # 문항 자체가 한 페이지 절반보다 매우 길 경우에는 한글의 자연스러운 조판에 따라
-        # 다음 페이지로 밀릴 수 있다.
+        # 정확한 2단 배치:
+        # 1번째 오답 -> 1페이지 왼쪽 단
+        # 2번째 오답 -> 같은 페이지 오른쪽 단 (강제 단 나누기)
+        # 3번째 오답 -> 2페이지 왼쪽 단 (강제 쪽 나누기)
+        # 4번째 오답 -> 같은 페이지 오른쪽 단 ...
         for idx, q in enumerate(wrongs):
             if q not in self.blocks:
                 raise ValueError(f"시험지에서 {q}번 문항을 찾지 못했습니다.")
+
             page_break = idx > 0 and idx % 2 == 0
+            column_break = idx % 2 == 1
             label = f"[오답 {q}번]  {student}  {test_date}"
-            new_root.append(_label_para(self.para_pr, self.char_pr, label, page_break=page_break))
+            new_root.append(
+                _label_para(
+                    self.para_pr,
+                    self.char_pr,
+                    label,
+                    page_break=page_break,
+                    column_break=column_break,
+                )
+            )
             for p in self.blocks[q]:
                 new_root.append(deepcopy(p))
 
