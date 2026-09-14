@@ -9,6 +9,7 @@ from lxml import etree
 HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 NS = {"hp": HP}
 SECTION_PATH = "Contents/section0.xml"
+HEADER_PATH = "Contents/header.xml"
 SKIP_HEADINGS = {"서답형", "5지선다형", "객관식", "주관식"}
 MEANINGFUL_TAGS = {
     "tbl", "pic", "rect", "ellipse", "container", "equation", "ole",
@@ -33,6 +34,87 @@ def _is_empty_layout_para(paragraph) -> bool:
         if etree.QName(node).localname in MEANINGFUL_TAGS:
             return False
     return True
+
+
+def _find_local(root, local_name: str):
+    for node in root.iter():
+        if etree.QName(node).localname == local_name:
+            return node
+    return None
+
+
+def _find_id(parent, id_value: str):
+    for node in list(parent):
+        if node.get("id") == str(id_value):
+            return node
+    return None
+
+
+def _next_id(parent) -> int:
+    values = []
+    for node in list(parent):
+        try:
+            values.append(int(node.get("id")))
+        except Exception:
+            pass
+    return (max(values) + 1) if values else 0
+
+
+def _build_cover_header(header_bytes: bytes) -> tuple[bytes, dict[str, str]]:
+    """표지 전용 문단/글자 스타일을 HWPX header.xml에 추가한다.
+
+    기존 문서 스타일 ID에 기대지 않고 직접 CENTER 문단과 표지용 글자 크기를 만들어
+    어떤 시험지에서도 표지 정렬/크기가 안정적으로 동일하게 나오게 한다.
+    """
+    root = etree.fromstring(header_bytes)
+    chars = _find_local(root, "charProperties")
+    paras = _find_local(root, "paraProperties")
+    if chars is None or paras is None:
+        raise ValueError("HWPX header.xml에서 글자/문단 속성을 찾지 못했습니다.")
+
+    base_char = _find_id(chars, "19") or _find_id(chars, "8") or list(chars)[0]
+    base_para = _find_id(paras, "14") or list(paras)[0]
+
+    ids: dict[str, str] = {}
+    next_char = _next_id(chars)
+    char_specs = [
+        ("spacer", 900),      # 9pt: 세로 위치 조절용
+        ("info", 2700),      # 27pt: 반명/회차/날짜
+        ("student", 4000),   # 40pt: 학생명(기존 크기 유지)
+        ("slogan", 3000),    # 30pt: 슬로건
+    ]
+    for key, height in char_specs:
+        cp = deepcopy(base_char)
+        cp.set("id", str(next_char))
+        cp.set("height", str(height))
+        cp.set("textColor", "#000000")
+        cp.set("shadeColor", "none")
+        chars.append(cp)
+        ids[key] = str(next_char)
+        next_char += 1
+    chars.set("itemCnt", str(len(list(chars))))
+
+    pp = deepcopy(base_para)
+    para_id = _next_id(paras)
+    pp.set("id", str(para_id))
+    pp.set("snapToGrid", "0")
+    align = None
+    for child in pp:
+        if etree.QName(child).localname == "align":
+            align = child
+            break
+    if align is None:
+        align = etree.SubElement(pp, f"{{{HP}}}align")
+    align.set("horizontal", "CENTER")
+    align.set("vertical", "BASELINE")
+    paras.append(pp)
+    paras.set("itemCnt", str(len(list(paras))))
+    ids["para_center"] = str(para_id)
+
+    return (
+        etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True),
+        ids,
+    )
 
 
 def _section_template(root, col_count: int = 2, hide_first_background: bool = False):
@@ -74,13 +156,10 @@ def _section_template(root, col_count: int = 2, hide_first_background: bool = Fa
         if not col_pr.get("sameGap"):
             col_pr.set("sameGap", "1000")
 
-    # 미주는 문서 끝에 배치되게 유지한다.
     for placement in p.xpath(".//hp:endNotePr/hp:placement", namespaces=NS):
         placement.set("place", "END_OF_DOCUMENT")
         placement.set("beneathText", "0")
 
-    # 표지 첫 페이지만 바탕쪽/꼬리말/쪽번호를 감춘다.
-    # 2페이지 문제 구역은 별도의 secPr을 사용하므로 기존 바탕쪽이 다시 표시된다.
     for visibility in p.xpath(".//hp:secPr/hp:visibility", namespaces=NS):
         if hide_first_background:
             visibility.set("hideFirstMasterPage", "1")
@@ -131,50 +210,45 @@ def _label_para(
     return p
 
 
-def _cover_para(text: str, char_pr: str = "8", para_pr: str = "14"):
-    """표지용 가운데 정렬 문단. paraPr 14는 원본의 가운데 정렬 스타일이다."""
-    return _label_para(para_pr, char_pr, text)
+def _cover_para(text: str, styles: dict[str, str], kind: str):
+    return _label_para(styles["para_center"], styles[kind], text)
 
 
 def _append_cover(
     root,
     cover_template,
     problem_template,
+    styles: dict[str, str],
     student: str,
     class_name: str,
     round_name: str,
     test_date: str,
 ) -> None:
-    # 1페이지는 1단 표지 전용 구역이다.
-    # cover_template에서 첫 페이지만 바탕쪽/쪽번호를 감춘다.
+    # 첫 페이지는 1단 + 바탕쪽 감추기 전용 구역.
     root.append(deepcopy(cover_template))
 
-    # 표지 전체 묶음을 페이지 중앙 부근으로 내린다.
-    # 빈 문단은 21pt 스타일을 사용해 과도하게 벌어지지 않게 한다.
+    # 표지 전체를 한 덩어리로 페이지 중앙 부근에 배치한다.
     for _ in range(8):
-        root.append(_cover_para("", "8", "14"))
+        root.append(_cover_para("", styles, "spacer"))
 
     class_text = (class_name or "").strip() or "-"
     round_text = (round_name or "").strip() or "-"
     exam_date = (test_date or "").strip() or "-"
 
-    # 반명/회차/날짜는 기존보다 크게: 27pt 굵은 글씨(원본 charPr 19).
-    root.append(_cover_para(f"반명  {class_text}    ·    회차  {round_text}", "19", "14"))
-    root.append(_cover_para(f"시험응시일  {exam_date}", "19", "14"))
-
-    for _ in range(3):
-        root.append(_cover_para("", "8", "14"))
-
-    # 학생 이름은 기존 크기 유지: 40pt 굵은 글씨.
-    root.append(_cover_para(f"{student}(오답노트)", "13", "14"))
+    root.append(_cover_para(f"반명  {class_text}    ·    회차  {round_text}", styles, "info"))
+    root.append(_cover_para(f"시험응시일  {exam_date}", styles, "info"))
 
     for _ in range(4):
-        root.append(_cover_para("", "8", "14"))
+        root.append(_cover_para("", styles, "spacer"))
 
-    # 슬로건은 기존보다 크게: 42pt 굵은 글씨.
-    root.append(_cover_para("성적이 오르는 신뢰의 이름 김현수학", "41", "14"))
+    root.append(_cover_para(f"{student}(오답노트)", styles, "student"))
 
-    # 2페이지부터 기존 바탕쪽이 보이는 2단 문제 구역으로 시작한다.
+    for _ in range(4):
+        root.append(_cover_para("", styles, "spacer"))
+
+    root.append(_cover_para("성적이 오르는 신뢰의 이름 김현수학", styles, "slogan"))
+
+    # 2페이지부터 원래의 2단 문제 구역으로 복귀.
     problem_start = deepcopy(problem_template)
     problem_start.set("pageBreak", "1")
     problem_start.set("columnBreak", "0")
@@ -182,7 +256,6 @@ def _append_cover(
 
 
 def _append_endnote_page_separator(root, para_pr: str, char_pr: str) -> None:
-    """문제 본문과 문서 끝 미주 사이에 실제 본문 쪽 나누기를 넣는다."""
     separator = _label_para(
         para_pr,
         char_pr,
@@ -212,8 +285,11 @@ class HwpxExam:
             names = z.namelist()
             if SECTION_PATH not in names:
                 raise ValueError("HWPX에서 Contents/section0.xml을 찾지 못했습니다.")
+            if HEADER_PATH not in names:
+                raise ValueError("HWPX에서 Contents/header.xml을 찾지 못했습니다.")
             self.entries = [(info, z.read(info.filename)) for info in z.infolist()]
             self.root = etree.fromstring(z.read(SECTION_PATH))
+            self.output_header, self.cover_styles = _build_cover_header(z.read(HEADER_PATH))
 
         self.para_pr, self.char_pr = _style_ids(self.root)
         self.cover_template = _section_template(self.root, 1, hide_first_background=True)
@@ -256,7 +332,6 @@ class HwpxExam:
                 if txt in SKIP_HEADINGS:
                     continue
 
-                # 문항의 미주(endNote)를 제거하지 않는다.
                 cp = deepcopy(paragraph)
                 cp.set("pageBreak", "0")
                 cp.set("columnBreak", "0")
@@ -282,15 +357,13 @@ class HwpxExam:
             new_root,
             self.cover_template,
             self.problem_template,
+            self.cover_styles,
             student,
             class_name,
             round_name,
             test_date,
         )
 
-        # 2페이지부터 정확한 2단 배치:
-        # 1번째 오답 -> 왼쪽 단 / 2번째 -> 오른쪽 단
-        # 3번째 -> 다음 페이지 왼쪽 / 4번째 -> 오른쪽 ...
         for idx, q in enumerate(wrongs):
             if q not in self.blocks:
                 raise ValueError(f"시험지에서 {q}번 문항을 찾지 못했습니다.")
@@ -357,6 +430,8 @@ class HwpxExam:
             for info, original in self.entries:
                 if info.filename == SECTION_PATH:
                     data = section_data
+                elif info.filename == HEADER_PATH:
+                    data = self.output_header
                 elif info.filename == "Preview/PrvText.txt":
                     data = preview
                 else:
