@@ -168,13 +168,16 @@ class HwpxExam:
             new_root.remove(child)
         new_root.append(deepcopy(self.template))
 
-        first = True
-        for q in wrongs:
+        # 2문항씩 한 페이지에 배치한다.
+        # 1·2번 오답은 같은 페이지, 3·4번 오답은 다음 페이지... 방식이다.
+        # 문항 자체가 한 페이지 절반보다 매우 길 경우에는 한글의 자연스러운 조판에 따라
+        # 다음 페이지로 밀릴 수 있다.
+        for idx, q in enumerate(wrongs):
             if q not in self.blocks:
                 raise ValueError(f"시험지에서 {q}번 문항을 찾지 못했습니다.")
+            page_break = idx > 0 and idx % 2 == 0
             label = f"[오답 {q}번]  {student}  {test_date}"
-            new_root.append(_label_para(self.para_pr, self.char_pr, label, page_break=not first))
-            first = False
+            new_root.append(_label_para(self.para_pr, self.char_pr, label, page_break=page_break))
             for p in self.blocks[q]:
                 new_root.append(deepcopy(p))
 
