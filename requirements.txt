@@ -1,5 +1,4 @@
 openpyxl==3.1.5
-PyMuPDF==1.26.4
 pywin32==311
 psutil==7.0.0
 tkinterdnd2==0.4.3
