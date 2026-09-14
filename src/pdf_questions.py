@@ -46,7 +46,7 @@ def _block_items(page):
         items.append((x0, y0, x1, y1, text))
     return items
 
-def detect_question_clips(pdf_path: str, expected_count: int) -> dict[int, list[tuple[int, fitz.Rect]]]:
+def detect_question_clips(pdf_path: str, expected_count: int) -> dict[int, list[tuple[int, tuple[float,float,float,float]]]]:
     doc = fitz.open(pdf_path)
     candidates = []
     solution_marker = None
@@ -87,7 +87,7 @@ def detect_question_clips(pdf_path: str, expected_count: int) -> dict[int, list[
         objs.append(Start(idx, pi, x0, y0, col, lane, text))
 
     lane_count = 2 if two_col else 1
-    def lane_rect(lane: int, y0: float, y1: float) -> tuple[int, fitz.Rect]:
+    def lane_rect(lane: int, y0: float, y1: float):
         pi = lane // lane_count
         col = lane % lane_count
         page = doc[pi]
@@ -99,7 +99,8 @@ def detect_question_clips(pdf_path: str, expected_count: int) -> dict[int, list[
                 x0, x1 = w / 2 + 5, w - 10
         else:
             x0, x1 = 10, w - 10
-        return pi, fitz.Rect(x0, max(8, y0), x1, min(h - 8, y1))
+        r = fitz.Rect(x0, max(8, y0), x1, min(h - 8, y1))
+        return pi, (r.x0, r.y0, r.x1, r.y1)
 
     if solution_marker:
         spi, sx, sy = solution_marker
@@ -128,68 +129,27 @@ def detect_question_clips(pdf_path: str, expected_count: int) -> dict[int, list[
     doc.close()
     return result
 
-def build_student_pdf(source_pdf: str, clips: dict, wrongs: list[int], out_pdf: str, student: str, test_name: str, test_date: str):
+def render_question_images(source_pdf: str, clips: dict, out_dir: str, dpi: int = 180) -> dict[int, list[dict]]:
+    """Render each detected question segment once; HWP workers reuse these PNGs."""
+    out_root = Path(out_dir)
+    out_root.mkdir(parents=True, exist_ok=True)
     src = fitz.open(source_pdf)
-    out = fitz.open()
-    a4 = fitz.paper_rect("a4")
-    margin = 30
-    header_h = 65
-    footer = 25
-    font_path = Path(r"C:\Windows\Fonts\malgun.ttf")
-
-    def new_page(q, continued=False):
-        p = out.new_page(width=a4.width, height=a4.height)
-        fontname = "helv"
-        if font_path.exists():
-            try:
-                p.insert_font(fontname="malgun", fontfile=str(font_path))
-                fontname = "malgun"
-            except Exception:
-                pass
-        title = f"{test_name}   |   {student}   |   시험일 {test_date}"
-        subtitle = f"오답 {q}번" + (" (계속)" if continued else "")
-        try:
-            p.insert_text((margin, 26), title, fontsize=10, fontname=fontname)
-            p.insert_text((margin, 48), subtitle, fontsize=13, fontname=fontname)
-        except Exception:
-            p.insert_text((margin, 26), f"{student} / {test_date}", fontsize=10)
-            p.insert_text((margin, 48), f"Wrong answer #{q}", fontsize=13)
-        p.draw_line((margin, header_h - 5), (a4.width - margin, header_h - 5))
-        return p, header_h + 5
-
-    for q in wrongs:
-        segs = clips.get(q)
-        if not segs:
-            continue
-        page, y = new_page(q)
-        usable_w = a4.width - 2 * margin
-        bottom = a4.height - footer
-        for src_page_no, clip in segs:
-            ratio = clip.height / max(clip.width, 1)
-            h = usable_w * ratio
-            max_h = bottom - y
-            if h <= max_h:
-                rect = fitz.Rect(margin, y, margin + usable_w, y + h)
-                page.show_pdf_page(rect, src, src_page_no, clip=clip, keep_proportion=True)
-                y += h + 8
-                continue
-            cur = clip.y0
-            while cur < clip.y1 - 1:
-                if bottom - y < 120:
-                    page, y = new_page(q, continued=True)
-                available_h = bottom - y
-                source_h = available_h / usable_w * clip.width
-                source_h = max(60, min(source_h, clip.y1 - cur))
-                piece = fitz.Rect(clip.x0, cur, clip.x1, min(clip.y1, cur + source_h))
-                target_h = usable_w * (piece.height / piece.width)
-                rect = fitz.Rect(margin, y, margin + usable_w, y + target_h)
-                page.show_pdf_page(rect, src, src_page_no, clip=piece, keep_proportion=True)
-                cur = piece.y1
-                y += target_h + 8
-                if cur < clip.y1 - 1:
-                    page, y = new_page(q, continued=True)
-
-    Path(out_pdf).parent.mkdir(parents=True, exist_ok=True)
-    out.save(out_pdf, garbage=3, deflate=True)
-    out.close()
+    scale = dpi / 72.0
+    matrix = fitz.Matrix(scale, scale)
+    result = {}
+    for q, segs in clips.items():
+        items = []
+        for idx, (page_no, rect_tuple) in enumerate(segs, 1):
+            rect = fitz.Rect(*rect_tuple)
+            page = src[page_no]
+            pix = page.get_pixmap(matrix=matrix, clip=rect, alpha=False)
+            path = out_root / f"q{q:03d}_{idx}.png"
+            pix.save(str(path))
+            # Physical size estimate for HWP. Cap at 170 mm wide.
+            px_w, px_h = pix.width, pix.height
+            width_mm = min(170.0, px_w / dpi * 25.4)
+            height_mm = width_mm * (px_h / max(px_w, 1))
+            items.append({"path": str(path), "width_mm": width_mm, "height_mm": height_mm})
+        result[int(q)] = items
     src.close()
+    return result
