@@ -1,0 +1,70 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "src/**"
+      - "requirements.txt"
+      - ".github/workflows/build-windows.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Locate Hancom security DLL
+        shell: pwsh
+        run: |
+          $dll = python -c "import pyhwpx, os; print(os.path.join(os.path.dirname(pyhwpx.__file__), 'FilePathCheckerModule.dll'))"
+          if (-not (Test-Path $dll)) { throw "FilePathCheckerModule.dll not found: $dll" }
+          "HWP_SECURITY_DLL=$dll" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build single EXE
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --windowed `
+            --name "김현수학_개인별오답생성기" `
+            --add-binary "$env:HWP_SECURITY_DLL;." `
+            --collect-all tkinterdnd2 `
+            --hidden-import win32com.client `
+            --hidden-import pythoncom `
+            --hidden-import pywintypes `
+            --paths src `
+            src/app.py
+
+      - name: Verify EXE
+        shell: pwsh
+        run: |
+          $exe = "dist\김현수학_개인별오답생성기.exe"
+          if (-not (Test-Path $exe)) { throw "EXE build missing" }
+          Get-Item $exe | Format-List Name,Length,LastWriteTime
+          Get-FileHash $exe -Algorithm SHA256
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kimhyun-wrong-answer-windows
+          path: dist/김현수학_개인별오답생성기.exe
+          if-no-files-found: error
+          retention-days: 30
