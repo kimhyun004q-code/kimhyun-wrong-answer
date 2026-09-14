@@ -13,6 +13,7 @@ SKIP_HEADINGS = {"서답형", "5지선다형", "객관식", "주관식"}
 MEANINGFUL_TAGS = {
     "tbl", "pic", "rect", "ellipse", "container", "equation", "ole",
     "video", "line", "arc", "curve", "polygon", "connectLine", "textart",
+    "endNote",
 }
 
 
@@ -23,16 +24,6 @@ def _text_of(elem) -> str:
 def _safe_name(text: str) -> str:
     text = re.sub(r'[\\/:*?"<>|]+', "_", text).strip().rstrip(".")
     return text or "결과"
-
-
-def _strip_endnotes(paragraph):
-    for end in list(paragraph.xpath(".//hp:endNote", namespaces=NS)):
-        ctrl = end.getparent()
-        ctrl.remove(end)
-        if etree.QName(ctrl).localname == "ctrl" and len(ctrl) == 0:
-            parent = ctrl.getparent()
-            parent.remove(ctrl)
-    return paragraph
 
 
 def _is_empty_layout_para(paragraph) -> bool:
@@ -177,7 +168,11 @@ class HwpxExam:
                 txt = _text_of(paragraph).strip()
                 if txt in SKIP_HEADINGS:
                     continue
-                cp = _strip_endnotes(deepcopy(paragraph))
+
+                # 중요: 문항의 미주(endNote)를 제거하지 않는다.
+                # HWPX의 미주는 문항 문단 안의 ctrl/endNote에 본문까지 함께 들어 있으므로
+                # 해당 문단을 통째로 복사하면 선택된 오답 문항의 미주/해설도 같이 따라온다.
+                cp = deepcopy(paragraph)
                 cp.set("pageBreak", "0")
                 cp.set("columnBreak", "0")
                 if not _is_empty_layout_para(cp):
@@ -230,7 +225,7 @@ class HwpxExam:
 
         section_data = self._build_section(student, test_date, wrongs)
         preview = (
-            f"{student}\n시험일 {test_date}\n오답문항: {', '.join(map(str, wrongs))}\n"
+            f"{student}\n시험일 {test_date}\n오답문항: {', '.join(map(str, wrongs))}\n미주 포함\n"
         ).encode("utf-8")
 
         out = Path(output_path)
@@ -252,7 +247,12 @@ class HwpxExam:
         with ZipFile(temp, "r") as check:
             if check.read("mimetype") != b"application/hwp+zip":
                 raise ValueError("생성된 HWPX의 mimetype 검증에 실패했습니다.")
-            etree.fromstring(check.read(SECTION_PATH))
+            check_root = etree.fromstring(check.read(SECTION_PATH))
+            endnote_count = len(check_root.xpath(".//hp:endNote", namespaces=NS))
+            if endnote_count != len(wrongs):
+                raise ValueError(
+                    f"생성 결과의 미주 수({endnote_count})가 오답 문항 수({len(wrongs)})와 일치하지 않습니다."
+                )
 
         os.replace(temp, out)
         return str(out)
