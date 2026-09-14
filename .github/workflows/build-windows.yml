@@ -68,3 +68,5 @@ jobs:
           path: dist/김현수학_개인별오답생성기.exe
           if-no-files-found: error
           retention-days: 30
+
+# build trigger 1
