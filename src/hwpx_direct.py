@@ -75,8 +75,7 @@ def _section_template(root):
         if not keep:
             p.remove(child)
 
-    # 결과물은 반드시 2단으로 고정한다.
-    # 첫 오답은 왼쪽 단, 다음 오답은 오른쪽 단에 배치한다.
+    # 결과물은 2단 고정: 왼쪽 단 1문제 / 오른쪽 단 1문제.
     for col_pr in p.xpath(".//hp:colPr", namespaces=NS):
         col_pr.set("type", "NEWSPAPER")
         col_pr.set("layout", "LEFT")
@@ -126,7 +125,7 @@ def _label_para(
 class HwpxExam:
     """HWPX 시험지를 한 번 읽고, 한컴 실행 없이 학생별 HWPX를 만든다."""
 
-    def __init__(self, source_path: str, expected_question_count: int):
+    def __init__(self, source_path: str, expected_question_count: int | None = None):
         self.source_path = str(Path(source_path).resolve())
         if Path(self.source_path).suffix.lower() != ".hwpx":
             raise ValueError("이 고속 버전은 HWPX 시험지만 지원합니다. HWP 파일은 한글에서 HWPX로 저장해 주세요.")
@@ -151,14 +150,23 @@ class HwpxExam:
             if paragraph.xpath(".//hp:endNote", namespaces=NS):
                 anchors.append(i)
 
-        if len(anchors) < expected_question_count:
-            raise ValueError(
-                f"시험지에서 문항을 {len(anchors)}개만 찾았습니다. "
-                f"엑셀의 문항 수는 {expected_question_count}개입니다."
-            )
-        if len(anchors) > expected_question_count:
-            anchors = anchors[:expected_question_count]
-        self.question_count = expected_question_count
+        if not anchors:
+            raise ValueError("시험지에서 문항 시작점을 찾지 못했습니다.")
+
+        requested = int(expected_question_count or 0)
+        if requested > 0:
+            if len(anchors) < requested:
+                raise ValueError(
+                    f"시험지에서 문항을 {len(anchors)}개만 찾았습니다. "
+                    f"엑셀의 문항 수는 {requested}개입니다."
+                )
+            if len(anchors) > requested:
+                anchors = anchors[:requested]
+            self.question_count = requested
+        else:
+            # 수기 모드에서는 엑셀 없이 HWPX 자체에서 전체 문항 수를 자동 인식한다.
+            self.question_count = len(anchors)
+
         self.anchors = anchors
         self.blocks: dict[int, list] = {}
 
@@ -186,8 +194,8 @@ class HwpxExam:
 
         # 정확한 2단 배치:
         # 1번째 오답 -> 1페이지 왼쪽 단
-        # 2번째 오답 -> 같은 페이지 오른쪽 단 (강제 단 나누기)
-        # 3번째 오답 -> 2페이지 왼쪽 단 (강제 쪽 나누기)
+        # 2번째 오답 -> 같은 페이지 오른쪽 단
+        # 3번째 오답 -> 2페이지 왼쪽 단
         # 4번째 오답 -> 같은 페이지 오른쪽 단 ...
         for idx, q in enumerate(wrongs):
             if q not in self.blocks:
