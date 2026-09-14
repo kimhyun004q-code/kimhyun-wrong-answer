@@ -29,13 +29,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Locate Hancom security DLL
-        shell: pwsh
-        run: |
-          $dll = python -c "import importlib.metadata as m; print(m.distribution('pyhwpx').locate_file('pyhwpx/FilePathCheckerModule.dll'))"
-          if (-not (Test-Path $dll)) { throw "FilePathCheckerModule.dll not found: $dll" }
-          "HWP_SECURITY_DLL=$dll" | Out-File -FilePath $env:GITHUB_ENV -Append
-
       - name: Build single EXE
         shell: pwsh
         run: |
@@ -44,19 +37,16 @@ jobs:
             --clean `
             --onefile `
             --windowed `
-            --name "김현수학_개인별오답생성기" `
-            --add-binary "$env:HWP_SECURITY_DLL;." `
+            --name "김현수학_개인별오답생성기_HWPX초고속" `
             --collect-all tkinterdnd2 `
-            --hidden-import win32com.client `
-            --hidden-import pythoncom `
-            --hidden-import pywintypes `
+            --hidden-import lxml.etree `
             --paths src `
             src/app.py
 
       - name: Verify EXE
         shell: pwsh
         run: |
-          $exe = "dist\김현수학_개인별오답생성기.exe"
+          $exe = "dist\김현수학_개인별오답생성기_HWPX초고속.exe"
           if (-not (Test-Path $exe)) { throw "EXE build missing" }
           Get-Item $exe | Format-List Name,Length,LastWriteTime
           Get-FileHash $exe -Algorithm SHA256
@@ -64,7 +54,7 @@ jobs:
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kimhyun-wrong-answer-windows
-          path: dist/김현수학_개인별오답생성기.exe
+          name: kimhyun-wrong-answer-hwpx-fast
+          path: dist/김현수학_개인별오답생성기_HWPX초고속.exe
           if-no-files-found: error
           retention-days: 30
