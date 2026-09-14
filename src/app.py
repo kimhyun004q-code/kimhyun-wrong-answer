@@ -8,9 +8,9 @@ import psutil
 from tkinterdnd2 import TkinterDnD, DND_FILES
 from excel_reader import read_workbook
 
-APP_TITLE = "김현수학 개인별오답 생성기"
-STALL_TIMEOUT_SECONDS = 120
-HARD_TIMEOUT_SECONDS = 1800
+APP_TITLE = "김현수학 개인별오답 생성기 - HWP 직접복사"
+STALL_TIMEOUT_SECONDS = 45
+HARD_TIMEOUT_SECONDS = 600
 WORKER_RETRIES = 2
 
 def safe_name(s: str) -> str:
@@ -72,7 +72,7 @@ def run_batch_worker(manifest_path: str, on_progress):
 
                 now = time.time()
                 if now - last_activity > STALL_TIMEOUT_SECONDS:
-                    last_error = "한컴 한글이 2분 동안 진행되지 않아 자동 재시도합니다."
+                    last_error = "한컴 한글이 45초 동안 진행되지 않아 자동 재시도합니다."
                     on_progress(last_error)
                     try:
                         proc.kill()
@@ -81,7 +81,7 @@ def run_batch_worker(manifest_path: str, on_progress):
                     _kill_new_hwp(before)
                     break
                 if now - started > HARD_TIMEOUT_SECONDS:
-                    last_error = "전체 작업 시간이 너무 길어 자동 재시도합니다."
+                    last_error = "전체 작업이 10분을 넘어 자동 재시도합니다."
                     on_progress(last_error)
                     try:
                         proc.kill()
@@ -89,7 +89,7 @@ def run_batch_worker(manifest_path: str, on_progress):
                         pass
                     _kill_new_hwp(before)
                     break
-                time.sleep(0.3)
+                time.sleep(0.2)
 
             try:
                 proc.wait(timeout=5)
@@ -98,7 +98,7 @@ def run_batch_worker(manifest_path: str, on_progress):
         _kill_new_hwp(before)
         if attempt < WORKER_RETRIES:
             on_progress("작업을 한 번 더 자동 시도합니다.")
-            time.sleep(1.0)
+            time.sleep(0.7)
     raise RuntimeError(last_error or "학생별 HWP 생성에 실패했습니다.")
 
 class App(TkinterDnD.Tk):
@@ -121,7 +121,7 @@ class App(TkinterDnD.Tk):
         outer = ttk.Frame(self, padding=14)
         outer.pack(fill="both", expand=True)
         ttk.Label(outer, text=APP_TITLE, font=("맑은 고딕", 18, "bold")).pack(anchor="w")
-        ttk.Label(outer, text="엑셀(.xlsx) + 시험지(.hwp/.hwpx)를 같이 드래그하세요. 결과는 학생별 HWP만 생성합니다.").pack(anchor="w", pady=(2,10))
+        ttk.Label(outer, text="엑셀(.xlsx) + 시험지(.hwp/.hwpx)를 같이 드래그하세요. PDF 변환 없이 원본 한글 문제를 바로 복사합니다.").pack(anchor="w", pady=(2,10))
 
         drop = tk.Label(outer, text="여기에 엑셀과 한글 파일을 드래그해서 놓으세요", relief="groove", bd=2, height=4, font=("맑은 고딕", 12, "bold"))
         drop.pack(fill="x", pady=(0,10))
@@ -151,7 +151,7 @@ class App(TkinterDnD.Tk):
 
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=10)
-        self.btn = ttk.Button(actions, text="학생별 HWP 빠른 생성", command=self._start)
+        self.btn = ttk.Button(actions, text="학생별 HWP 직접 생성", command=self._start)
         self.btn.pack(side="left")
         ttk.Button(actions, text="결과 폴더 열기", command=self._open_out).pack(side="left", padx=8)
         self.pb = ttk.Progressbar(actions, mode="indeterminate")
@@ -261,7 +261,7 @@ class App(TkinterDnD.Tk):
                     "students": students,
                 }
                 manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
-                self._log("고속 모드 시작: 한글을 한 번만 실행해 전체 학생을 연속 처리합니다.")
+                self._log("직접복사 모드 시작: PDF/이미지 변환 없이 원본 한글에서 문제를 바로 가져옵니다.")
                 run_batch_worker(str(manifest_path), self._log)
 
             self._log(f"모든 학생 HWP 생성 완료: {result_dir}")
