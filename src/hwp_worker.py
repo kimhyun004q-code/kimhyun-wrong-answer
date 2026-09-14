@@ -162,11 +162,13 @@ def _create_student_doc(hwp, manifest: dict, images: dict, output_hwp: str):
 
 
 def batch_hwp_worker(manifest_path: str, progress: str) -> int:
-    """Fast path: one Hangul process handles source conversion and all student HWP files."""
+    """Ultra-fast path: one Hangul process, render only actually-wrong questions as compact JPEGs."""
     pythoncom.CoInitialize()
     hwp = None
     try:
         job = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        students = job["students"]
+        needed_questions = sorted({int(q) for st in students for q in st.get("wrongs", [])})
         hwp = _prepare_hwp(progress)
 
         with tempfile.TemporaryDirectory(prefix="kimhyun_batch_") as td:
@@ -183,10 +185,13 @@ def batch_hwp_worker(manifest_path: str, progress: str) -> int:
             write_progress(progress, "analyze", "문항 위치를 한 번만 분석 중")
             from pdf_questions import detect_question_clips, render_question_images
             clips = detect_question_clips(str(source_pdf), int(job["question_count"]))
-            images = render_question_images(str(source_pdf), clips, str(image_dir), dpi=160)
-            write_progress(progress, "render", f"문항 {len(images)}개 준비 완료")
+            write_progress(progress, "render", f"실제 오답 문항 {len(needed_questions)}개만 고속 준비 중")
+            images = render_question_images(
+                str(source_pdf), clips, str(image_dir), dpi=140,
+                only_questions=set(needed_questions)
+            )
+            write_progress(progress, "render_done", f"오답 문항 {len(images)}개 준비 완료")
 
-            students = job["students"]
             total = len(students)
             for i, st in enumerate(students, 1):
                 write_progress(progress, "student", f"[{i}/{total}] {st['student']} HWP 생성 중", current=i, total=total)
@@ -203,7 +208,6 @@ def batch_hwp_worker(manifest_path: str, progress: str) -> int:
 
 
 def worker(source: str, target_pdf: str, progress: str) -> int:
-    """Backward-compatible source converter."""
     pythoncom.CoInitialize()
     hwp = None
     try:
@@ -223,7 +227,6 @@ def worker(source: str, target_pdf: str, progress: str) -> int:
 
 
 def student_hwp_worker(manifest_path: str, output_hwp: str, progress: str) -> int:
-    """Backward-compatible single-student writer."""
     pythoncom.CoInitialize()
     hwp = None
     try:
