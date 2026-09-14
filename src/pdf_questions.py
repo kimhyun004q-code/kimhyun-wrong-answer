@@ -129,27 +129,36 @@ def detect_question_clips(pdf_path: str, expected_count: int) -> dict[int, list[
     doc.close()
     return result
 
-def render_question_images(source_pdf: str, clips: dict, out_dir: str, dpi: int = 180) -> dict[int, list[dict]]:
-    """Render each detected question segment once; HWP workers reuse these PNGs."""
+def render_question_images(source_pdf: str, clips: dict, out_dir: str, dpi: int = 140,
+                           only_questions: set[int] | None = None) -> dict[int, list[dict]]:
+    """Render only needed question segments once as compact JPEGs for much faster HWP insertion/save."""
     out_root = Path(out_dir)
     out_root.mkdir(parents=True, exist_ok=True)
     src = fitz.open(source_pdf)
     scale = dpi / 72.0
     matrix = fitz.Matrix(scale, scale)
     result = {}
+    needed = set(int(q) for q in only_questions) if only_questions else None
+
     for q, segs in clips.items():
+        q = int(q)
+        if needed is not None and q not in needed:
+            continue
         items = []
         for idx, (page_no, rect_tuple) in enumerate(segs, 1):
             rect = fitz.Rect(*rect_tuple)
             page = src[page_no]
-            pix = page.get_pixmap(matrix=matrix, clip=rect, alpha=False)
-            path = out_root / f"q{q:03d}_{idx}.png"
-            pix.save(str(path))
-            # Physical size estimate for HWP. Cap at 170 mm wide.
+            pix = page.get_pixmap(matrix=matrix, clip=rect, alpha=False, colorspace=fitz.csRGB)
+            path = out_root / f"q{q:03d}_{idx}.jpg"
+            try:
+                pix.save(str(path), jpg_quality=88)
+            except TypeError:
+                path.write_bytes(pix.tobytes("jpeg", jpg_quality=88))
+
             px_w, px_h = pix.width, pix.height
             width_mm = min(170.0, px_w / dpi * 25.4)
             height_mm = width_mm * (px_h / max(px_w, 1))
             items.append({"path": str(path), "width_mm": width_mm, "height_mm": height_mm})
-        result[int(q)] = items
+        result[q] = items
     src.close()
     return result
