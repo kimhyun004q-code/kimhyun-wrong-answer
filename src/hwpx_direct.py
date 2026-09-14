@@ -75,6 +75,11 @@ def _section_template(root):
         if not col_pr.get("sameGap"):
             col_pr.set("sameGap", "1000")
 
+    # 미주는 문서 끝에 배치되게 유지한다.
+    for placement in p.xpath(".//hp:endNotePr/hp:placement", namespaces=NS):
+        placement.set("place", "END_OF_DOCUMENT")
+        placement.set("beneathText", "0")
+
     p.set("pageBreak", "0")
     p.set("columnBreak", "0")
     p.set("merged", "0")
@@ -113,19 +118,29 @@ def _label_para(
     return p
 
 
-def _start_endnotes_on_new_page(root) -> None:
-    """선택된 미주 해설 전체를 문제 본문 다음의 새 페이지에서 시작시킨다.
+def _append_endnote_page_separator(root, para_pr: str, char_pr: str) -> None:
+    """문제 본문과 문서 끝 미주 사이에 실제 본문 쪽 나누기를 넣는다.
 
-    첫 번째 미주의 첫 문단에만 pageBreak를 주고, 이후 미주는 자연스럽게 이어지게 한다.
+    HWPX의 endNote 내부 문단 pageBreak는 미주 배치 단계에서 무시될 수 있다.
+    따라서 END_OF_DOCUMENT 미주보다 앞선 마지막 본문 문단 자체를 새 페이지에서
+    시작하도록 만들어, 모든 미주 해설이 문제 다음 새 페이지에 놓이게 한다.
     """
-    endnotes = root.xpath(".//hp:endNote", namespaces=NS)
-    for idx, note in enumerate(endnotes):
+    separator = _label_para(
+        para_pr,
+        char_pr,
+        "",
+        page_break=True,
+        column_break=False,
+    )
+    separator.set("id", "2147483647")
+    root.append(separator)
+
+    # 미주 안쪽에는 별도 쪽 나누기를 두지 않는다. 첫 미주부터 자연스럽게 이어 붙인다.
+    for note in root.xpath(".//hp:endNote", namespaces=NS):
         paras = note.xpath("./hp:subList/hp:p", namespaces=NS)
-        if not paras:
-            continue
-        first = paras[0]
-        first.set("pageBreak", "1" if idx == 0 else "0")
-        first.set("columnBreak", "0")
+        if paras:
+            paras[0].set("pageBreak", "0")
+            paras[0].set("columnBreak", "0")
 
 
 class HwpxExam:
@@ -225,8 +240,9 @@ class HwpxExam:
             for p in self.blocks[q]:
                 new_root.append(deepcopy(p))
 
-        # 문제는 기존 2단 배치 그대로 두고, 미주 해설은 다음 새 페이지에서 시작한다.
-        _start_endnotes_on_new_page(new_root)
+        # 핵심: 마지막 문제 뒤의 '본문'에 실제 쪽 나누기를 추가한다.
+        # 문서 끝 미주는 이 새 페이지 다음에 렌더링된다.
+        _append_endnote_page_separator(new_root, self.para_pr, self.char_pr)
 
         return etree.tostring(
             new_root,
@@ -242,7 +258,7 @@ class HwpxExam:
 
         section_data = self._build_section(student, test_date, wrongs)
         preview = (
-            f"{student}\n시험일 {test_date}\n오답문항: {', '.join(map(str, wrongs))}\n미주 포함 / 해설 새 페이지 시작\n"
+            f"{student}\n시험일 {test_date}\n오답문항: {', '.join(map(str, wrongs))}\n미주 포함 / 문제 뒤 실제 쪽 나누기\n"
         ).encode("utf-8")
 
         out = Path(output_path)
@@ -270,9 +286,9 @@ class HwpxExam:
                 raise ValueError(
                     f"생성 결과의 미주 수({len(endnotes)})가 오답 문항 수({len(wrongs)})와 일치하지 않습니다."
                 )
-            first_note_paras = endnotes[0].xpath("./hp:subList/hp:p", namespaces=NS) if endnotes else []
-            if not first_note_paras or first_note_paras[0].get("pageBreak") != "1":
-                raise ValueError("해설 새 페이지 시작 설정 검증에 실패했습니다.")
+            top_paras = [x for x in list(check_root) if etree.QName(x).localname == "p"]
+            if not top_paras or top_paras[-1].get("pageBreak") != "1":
+                raise ValueError("문제와 미주 사이 실제 쪽 나누기 검증에 실패했습니다.")
 
         os.replace(temp, out)
         return str(out)
