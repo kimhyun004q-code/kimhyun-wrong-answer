@@ -32,9 +32,7 @@ jobs:
       - name: Locate Hancom security DLL
         shell: pwsh
         run: |
-          $location = python -m pip show pyhwpx | Select-String '^Location:' | ForEach-Object { ($_ -split ':',2)[1].Trim() }
-          if (-not $location) { throw "pyhwpx installation location not found" }
-          $dll = Join-Path $location 'pyhwpx\FilePathCheckerModule.dll'
+          $dll = python -c "import importlib.metadata as m; print(m.distribution('pyhwpx').locate_file('pyhwpx/FilePathCheckerModule.dll'))"
           if (-not (Test-Path $dll)) { throw "FilePathCheckerModule.dll not found: $dll" }
           "HWP_SECURITY_DLL=$dll" | Out-File -FilePath $env:GITHUB_ENV -Append
 
