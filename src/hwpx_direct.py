@@ -35,7 +35,7 @@ def _is_empty_layout_para(paragraph) -> bool:
     return True
 
 
-def _section_template(root, col_count: int = 2):
+def _section_template(root, col_count: int = 2, hide_first_background: bool = False):
     source = None
     for p in root:
         if p.xpath(".//hp:secPr", namespaces=NS):
@@ -79,6 +79,20 @@ def _section_template(root, col_count: int = 2):
         placement.set("place", "END_OF_DOCUMENT")
         placement.set("beneathText", "0")
 
+    # 표지 첫 페이지만 바탕쪽/꼬리말/쪽번호를 감춘다.
+    # 2페이지 문제 구역은 별도의 secPr을 사용하므로 기존 바탕쪽이 다시 표시된다.
+    for visibility in p.xpath(".//hp:secPr/hp:visibility", namespaces=NS):
+        if hide_first_background:
+            visibility.set("hideFirstMasterPage", "1")
+            visibility.set("hideFirstFooter", "1")
+            visibility.set("hideFirstHeader", "1")
+            visibility.set("hideFirstPageNum", "1")
+        else:
+            visibility.set("hideFirstMasterPage", "0")
+            visibility.set("hideFirstFooter", "0")
+            visibility.set("hideFirstHeader", "0")
+            visibility.set("hideFirstPageNum", "0")
+
     p.set("pageBreak", "0")
     p.set("columnBreak", "0")
     p.set("merged", "0")
@@ -118,7 +132,7 @@ def _label_para(
 
 
 def _cover_para(text: str, char_pr: str = "8", para_pr: str = "14"):
-    """표지용 가운데 정렬 문단. 원본 HWPX에 이미 존재하는 스타일 ID를 재사용한다."""
+    """표지용 가운데 정렬 문단. paraPr 14는 원본의 가운데 정렬 스타일이다."""
     return _label_para(para_pr, char_pr, text)
 
 
@@ -129,30 +143,38 @@ def _append_cover(
     student: str,
     class_name: str,
     round_name: str,
+    test_date: str,
 ) -> None:
-    # 1페이지는 단일단 표지 전용 구역으로 만든다.
+    # 1페이지는 1단 표지 전용 구역이다.
+    # cover_template에서 첫 페이지만 바탕쪽/쪽번호를 감춘다.
     root.append(deepcopy(cover_template))
 
-    # 상단 여백
-    for _ in range(5):
+    # 표지 전체 묶음을 페이지 중앙 부근으로 내린다.
+    # 빈 문단은 21pt 스타일을 사용해 과도하게 벌어지지 않게 한다.
+    for _ in range(8):
         root.append(_cover_para("", "8", "14"))
 
     class_text = (class_name or "").strip() or "-"
     round_text = (round_name or "").strip() or "-"
-    root.append(_cover_para(f"반명  {class_text}    ·    회차  {round_text}", "8", "14"))
+    exam_date = (test_date or "").strip() or "-"
+
+    # 반명/회차/날짜는 기존보다 크게: 27pt 굵은 글씨(원본 charPr 19).
+    root.append(_cover_para(f"반명  {class_text}    ·    회차  {round_text}", "19", "14"))
+    root.append(_cover_para(f"시험응시일  {exam_date}", "19", "14"))
+
+    for _ in range(3):
+        root.append(_cover_para("", "8", "14"))
+
+    # 학생 이름은 기존 크기 유지: 40pt 굵은 글씨.
+    root.append(_cover_para(f"{student}(오답노트)", "13", "14"))
 
     for _ in range(4):
         root.append(_cover_para("", "8", "14"))
 
-    # 학생 이름을 가장 크게 표시한다.
-    root.append(_cover_para(f"{student}(오답노트)", "13", "14"))
+    # 슬로건은 기존보다 크게: 42pt 굵은 글씨.
+    root.append(_cover_para("성적이 오르는 신뢰의 이름 김현수학", "41", "14"))
 
-    for _ in range(5):
-        root.append(_cover_para("", "8", "14"))
-
-    root.append(_cover_para("성적이 오르는 신뢰의 이름 김현수학", "8", "14"))
-
-    # 2페이지부터 새로운 2단 구역으로 시작한다.
+    # 2페이지부터 기존 바탕쪽이 보이는 2단 문제 구역으로 시작한다.
     problem_start = deepcopy(problem_template)
     problem_start.set("pageBreak", "1")
     problem_start.set("columnBreak", "0")
@@ -194,8 +216,8 @@ class HwpxExam:
             self.root = etree.fromstring(z.read(SECTION_PATH))
 
         self.para_pr, self.char_pr = _style_ids(self.root)
-        self.cover_template = _section_template(self.root, 1)
-        self.problem_template = _section_template(self.root, 2)
+        self.cover_template = _section_template(self.root, 1, hide_first_background=True)
+        self.problem_template = _section_template(self.root, 2, hide_first_background=False)
         self.answer_index = len(self.root)
         anchors: list[int] = []
 
@@ -263,6 +285,7 @@ class HwpxExam:
             student,
             class_name,
             round_name,
+            test_date,
         )
 
         # 2페이지부터 정확한 2단 배치:
@@ -317,8 +340,11 @@ class HwpxExam:
             round_name=round_name,
         )
         preview = (
-            f"{student}(오답노트)\n반명 {class_name}\n회차 {round_name}\n"
-            f"시험일 {test_date}\n오답문항: {', '.join(map(str, wrongs))}\n"
+            f"{student}(오답노트)\n"
+            f"반명 {class_name}\n"
+            f"회차 {round_name}\n"
+            f"시험응시일 {test_date}\n"
+            f"오답문항: {', '.join(map(str, wrongs))}\n"
         ).encode("utf-8")
 
         out = Path(output_path)
@@ -349,6 +375,11 @@ class HwpxExam:
             section_count = len(check_root.xpath(".//hp:secPr", namespaces=NS))
             if section_count < 2:
                 raise ValueError("표지와 문제를 분리하는 구역 설정 검증에 실패했습니다.")
+
+            visibility_nodes = check_root.xpath(".//hp:secPr/hp:visibility", namespaces=NS)
+            if not visibility_nodes or visibility_nodes[0].get("hideFirstMasterPage") != "1":
+                raise ValueError("표지 첫 페이지 바탕쪽 감추기 설정 검증에 실패했습니다.")
+
             top_paras = [x for x in list(check_root) if etree.QName(x).localname == "p"]
             if not top_paras or top_paras[-1].get("pageBreak") != "1":
                 raise ValueError("문제와 미주 사이 실제 쪽 나누기 검증에 실패했습니다.")
