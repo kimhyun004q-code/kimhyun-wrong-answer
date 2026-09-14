@@ -3,15 +3,16 @@ import json, os, re, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import psutil
 
 from tkinterdnd2 import TkinterDnD, DND_FILES
 
 from excel_reader import read_workbook
-from pdf_questions import detect_question_clips, build_student_pdf
+from pdf_questions import detect_question_clips, render_question_images
 
 APP_TITLE = "김현수학 개인별오답 생성기"
-CONVERT_TIMEOUT_SECONDS = 180
-CONVERT_RETRIES = 2
+WORKER_TIMEOUT_SECONDS = 180
+WORKER_RETRIES = 2
 
 def safe_name(s: str) -> str:
     return re.sub(r'[\\/:*?"<>|]+', "_", s).strip()
@@ -21,12 +22,30 @@ def _child_command(*args):
         return [sys.executable, *args]
     return [sys.executable, str(Path(__file__).resolve()), *args]
 
-def run_hwp_conversion(source: str, target_pdf: str, on_progress):
+def _hwp_pids() -> set[int]:
+    out = set()
+    for p in psutil.process_iter(["pid", "name"]):
+        try:
+            if (p.info.get("name") or "").lower() == "hwp.exe":
+                out.add(int(p.info["pid"]))
+        except Exception:
+            pass
+    return out
+
+def _kill_new_hwp(before: set[int]):
+    for pid in _hwp_pids() - before:
+        try:
+            psutil.Process(pid).kill()
+        except Exception:
+            pass
+
+def run_worker(args: list[str], success_file: str | None, on_progress, label: str):
     last_error = None
-    for attempt in range(1, CONVERT_RETRIES + 1):
-        with tempfile.TemporaryDirectory(prefix="kimhyun_hwp_") as td:
+    for attempt in range(1, WORKER_RETRIES + 1):
+        before = _hwp_pids()
+        with tempfile.TemporaryDirectory(prefix="kimhyun_worker_") as td:
             progress = Path(td) / "progress.json"
-            cmd = _child_command("--hwp-worker", source, target_pdf, str(progress))
+            cmd = _child_command(*args, str(progress))
             proc = subprocess.Popen(cmd, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             started = time.time()
             last_state = None
@@ -37,32 +56,35 @@ def run_hwp_conversion(source: str, target_pdf: str, on_progress):
                         state = data.get("state")
                         if state != last_state:
                             last_state = state
-                            on_progress(f"[한글 변환 {attempt}/{CONVERT_RETRIES}] {data.get('message','')}")
+                            on_progress(f"[{label} {attempt}/{WORKER_RETRIES}] {data.get('message','')}")
                         if state == "error":
-                            last_error = data.get("message", "한글 변환 오류")
+                            last_error = data.get("message", f"{label} 오류")
                     except Exception:
                         pass
                 rc = proc.poll()
                 if rc is not None:
-                    if rc == 0 and Path(target_pdf).exists():
+                    ok_file = True if success_file is None else Path(success_file).exists()
+                    if rc == 0 and ok_file:
                         return
                     break
-                if time.time() - started > CONVERT_TIMEOUT_SECONDS:
-                    last_error = "한컴 한글 응답 시간이 너무 길어 작업을 다시 시도합니다."
+                if time.time() - started > WORKER_TIMEOUT_SECONDS:
+                    last_error = f"{label} 작업이 오래 응답하지 않아 자동으로 다시 시도합니다."
                     on_progress(last_error)
                     try:
-                        proc.terminate()
+                        proc.kill()
                     except Exception:
                         pass
+                    _kill_new_hwp(before)
                     break
-                time.sleep(0.4)
+                time.sleep(0.35)
             try:
                 proc.wait(timeout=5)
             except Exception:
                 pass
-        if attempt < CONVERT_RETRIES:
+        _kill_new_hwp(before)
+        if attempt < WORKER_RETRIES:
             time.sleep(1.0)
-    raise RuntimeError(last_error or "한글 PDF 변환에 실패했습니다.")
+    raise RuntimeError(last_error or f"{label} 작업에 실패했습니다.")
 
 class App(TkinterDnD.Tk):
     def __init__(self):
@@ -71,6 +93,7 @@ class App(TkinterDnD.Tk):
         self.geometry("1000x760")
         self.minsize(900, 680)
         self.data = None
+        self.last_result_dir = None
         self.excel_path = tk.StringVar()
         self.hwp_path = tk.StringVar()
         self.output_dir = tk.StringVar(value=str(Path.home() / "Desktop" / "개인별오답"))
@@ -83,7 +106,7 @@ class App(TkinterDnD.Tk):
         outer = ttk.Frame(self, padding=14)
         outer.pack(fill="both", expand=True)
         ttk.Label(outer, text=APP_TITLE, font=("맑은 고딕", 18, "bold")).pack(anchor="w")
-        ttk.Label(outer, text="엑셀(.xlsx) + 시험지(.hwp/.hwpx)를 한꺼번에 드래그해도 됩니다. 결과는 PDF만 생성합니다.").pack(anchor="w", pady=(2,10))
+        ttk.Label(outer, text="엑셀(.xlsx) + 시험지(.hwp/.hwpx)를 같이 드래그하세요. 결과는 학생별 HWP만 생성합니다.").pack(anchor="w", pady=(2,10))
 
         drop = tk.Label(outer, text="여기에 엑셀과 한글 파일을 드래그해서 놓으세요", relief="groove", bd=2, height=4, font=("맑은 고딕", 12, "bold"))
         drop.pack(fill="x", pady=(0,10))
@@ -94,7 +117,7 @@ class App(TkinterDnD.Tk):
         form.pack(fill="x")
         self._row(form, 0, "성적 엑셀", self.excel_path, self._pick_excel)
         self._row(form, 1, "시험지", self.hwp_path, self._pick_hwp)
-        self._row(form, 2, "저장 폴더", self.output_dir, self._pick_out)
+        self._row(form, 2, "저장 위치", self.output_dir, self._pick_out)
         ttk.Label(form, text="시험명").grid(row=3, column=0, sticky="w", pady=4)
         ttk.Entry(form, textvariable=self.test_name).grid(row=3, column=1, sticky="ew", padx=6, pady=4)
         ttk.Label(form, text="시험일").grid(row=3, column=2, sticky="w", padx=(10,0), pady=4)
@@ -113,9 +136,9 @@ class App(TkinterDnD.Tk):
 
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=10)
-        self.btn = ttk.Button(actions, text="학생별 PDF 생성", command=self._start)
+        self.btn = ttk.Button(actions, text="학생별 HWP 생성", command=self._start)
         self.btn.pack(side="left")
-        ttk.Button(actions, text="저장 폴더 열기", command=self._open_out).pack(side="left", padx=8)
+        ttk.Button(actions, text="결과 폴더 열기", command=self._open_out).pack(side="left", padx=8)
         self.pb = ttk.Progressbar(actions, mode="indeterminate")
         self.pb.pack(side="right", fill="x", expand=True, padx=(20,0))
 
@@ -190,27 +213,45 @@ class App(TkinterDnD.Tk):
             source = self.hwp_path.get()
             if not Path(source).exists():
                 raise RuntimeError("시험지 HWP/HWPX를 넣어주세요.")
-            out_dir = Path(self.output_dir.get())
-            out_dir.mkdir(parents=True, exist_ok=True)
+
+            root = Path(self.output_dir.get())
+            root.mkdir(parents=True, exist_ok=True)
+            folder_name = safe_name(f"{self.test_name.get()}_{self.test_date.get()}_개인별오답")
+            result_dir = root / folder_name
+            result_dir.mkdir(parents=True, exist_ok=True)
+            self.last_result_dir = result_dir
 
             with tempfile.TemporaryDirectory(prefix="kimhyun_wrong_") as td:
-                base_pdf = str(Path(td) / "source.pdf")
+                work = Path(td)
+                base_pdf = str(work / "source.pdf")
                 self._log("한글 파일 접근은 프로그램이 자동 허용합니다. 이제 기다리기만 하면 됩니다.")
-                run_hwp_conversion(source, base_pdf, self._log)
+                run_worker(["--hwp-worker", source, base_pdf], base_pdf, self._log, "시험지 준비")
 
-                self._log("PDF에서 문제 위치를 자동 분석 중입니다.")
+                self._log("문항 위치를 자동 분석 중입니다.")
                 clips = detect_question_clips(base_pdf, self.data["question_count"])
-                self._log(f"문항 {len(clips)}개 인식 완료.")
+                images = render_question_images(base_pdf, clips, str(work / "question_images"))
+                self._log(f"문항 {len(images)}개 준비 완료.")
 
                 targets = [s for s in self.data["students"] if s["wrongs"]]
                 for i, s in enumerate(targets, 1):
-                    self._log(f"[{i}/{len(targets)}] {s['name']} PDF 생성 중")
-                    stem = safe_name(f"{s['name']}_{self.test_name.get()}_{self.test_date.get()}_오답")
-                    out = str(out_dir / f"{stem}.pdf")
-                    build_student_pdf(base_pdf, clips, s["wrongs"], out, s["name"], self.test_name.get(), self.test_date.get())
+                    student = str(s["name"])
+                    date_text = self.test_date.get().strip()
+                    filename = safe_name(f"{student}_{date_text}_오답.hwp")
+                    out_hwp = str(result_dir / filename)
+                    manifest = {
+                        "student": student,
+                        "test_name": self.test_name.get().strip(),
+                        "test_date": date_text,
+                        "wrongs": [int(q) for q in s["wrongs"]],
+                        "images": {str(q): images.get(int(q), []) for q in s["wrongs"]},
+                    }
+                    manifest_path = work / f"manifest_{i}.json"
+                    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+                    self._log(f"[{i}/{len(targets)}] {student} HWP 생성 중")
+                    run_worker(["--student-hwp-worker", str(manifest_path), out_hwp], out_hwp, self._log, student)
 
-            self._log("모든 학생의 PDF 생성 완료.")
-            self.after(0, lambda: messagebox.showinfo("완료", f"완료했습니다.\n\n{out_dir}"))
+            self._log(f"모든 학생 HWP 생성 완료: {result_dir}")
+            self.after(0, lambda: messagebox.showinfo("완료", f"완료했습니다.\n\n결과 폴더:\n{result_dir}"))
         except Exception as e:
             self._log("오류: " + str(e))
             self.after(0, lambda: messagebox.showerror("오류", str(e)))
@@ -222,8 +263,8 @@ class App(TkinterDnD.Tk):
         self.btn.configure(state="normal")
 
     def _open_out(self):
-        p = Path(self.output_dir.get())
-        p.mkdir(parents=True, exist_ok=True)
+        p = self.last_result_dir or Path(self.output_dir.get())
+        Path(p).mkdir(parents=True, exist_ok=True)
         os.startfile(str(p))
 
 def main():
@@ -232,6 +273,11 @@ def main():
         if len(sys.argv) != 5:
             raise SystemExit(3)
         raise SystemExit(worker(sys.argv[2], sys.argv[3], sys.argv[4]))
+    if len(sys.argv) >= 2 and sys.argv[1] == "--student-hwp-worker":
+        from hwp_worker import student_hwp_worker
+        if len(sys.argv) != 5:
+            raise SystemExit(3)
+        raise SystemExit(student_hwp_worker(sys.argv[2], sys.argv[3], sys.argv[4]))
     App().mainloop()
 
 if __name__ == "__main__":
