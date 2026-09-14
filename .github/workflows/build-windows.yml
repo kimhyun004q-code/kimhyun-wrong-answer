@@ -32,7 +32,9 @@ jobs:
       - name: Locate Hancom security DLL
         shell: pwsh
         run: |
-          $dll = python -c "import pyhwpx, os; print(os.path.join(os.path.dirname(pyhwpx.__file__), 'FilePathCheckerModule.dll'))"
+          $location = python -m pip show pyhwpx | Select-String '^Location:' | ForEach-Object { ($_ -split ':',2)[1].Trim() }
+          if (-not $location) { throw "pyhwpx installation location not found" }
+          $dll = Join-Path $location 'pyhwpx\FilePathCheckerModule.dll'
           if (-not (Test-Path $dll)) { throw "FilePathCheckerModule.dll not found: $dll" }
           "HWP_SECURITY_DLL=$dll" | Out-File -FilePath $env:GITHUB_ENV -Append
 
@@ -68,5 +70,3 @@ jobs:
           path: dist/김현수학_개인별오답생성기.exe
           if-no-files-found: error
           retention-days: 30
-
-# build trigger 1
