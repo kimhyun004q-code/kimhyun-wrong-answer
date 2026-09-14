@@ -6,12 +6,11 @@ from tkinter import ttk, filedialog, messagebox
 import psutil
 
 from tkinterdnd2 import TkinterDnD, DND_FILES
-
 from excel_reader import read_workbook
-from pdf_questions import detect_question_clips, render_question_images
 
 APP_TITLE = "김현수학 개인별오답 생성기"
-WORKER_TIMEOUT_SECONDS = 180
+STALL_TIMEOUT_SECONDS = 120
+HARD_TIMEOUT_SECONDS = 1800
 WORKER_RETRIES = 2
 
 def safe_name(s: str) -> str:
@@ -39,36 +38,41 @@ def _kill_new_hwp(before: set[int]):
         except Exception:
             pass
 
-def run_worker(args: list[str], success_file: str | None, on_progress, label: str):
+def run_batch_worker(manifest_path: str, on_progress):
     last_error = None
     for attempt in range(1, WORKER_RETRIES + 1):
         before = _hwp_pids()
-        with tempfile.TemporaryDirectory(prefix="kimhyun_worker_") as td:
+        with tempfile.TemporaryDirectory(prefix="kimhyun_runner_") as td:
             progress = Path(td) / "progress.json"
-            cmd = _child_command(*args, str(progress))
+            cmd = _child_command("--batch-hwp-worker", manifest_path, str(progress))
             proc = subprocess.Popen(cmd, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             started = time.time()
-            last_state = None
+            last_activity = started
+            last_marker = None
+
             while True:
                 if progress.exists():
                     try:
                         data = json.loads(progress.read_text(encoding="utf-8"))
-                        state = data.get("state")
-                        if state != last_state:
-                            last_state = state
-                            on_progress(f"[{label} {attempt}/{WORKER_RETRIES}] {data.get('message','')}")
-                        if state == "error":
-                            last_error = data.get("message", f"{label} 오류")
+                        marker = (data.get("state"), data.get("message"), data.get("current"))
+                        if marker != last_marker:
+                            last_marker = marker
+                            last_activity = time.time()
+                            on_progress(data.get("message", "작업 중"))
+                        if data.get("state") == "error":
+                            last_error = data.get("message", "한글 생성 오류")
                     except Exception:
                         pass
+
                 rc = proc.poll()
                 if rc is not None:
-                    ok_file = True if success_file is None else Path(success_file).exists()
-                    if rc == 0 and ok_file:
+                    if rc == 0:
                         return
                     break
-                if time.time() - started > WORKER_TIMEOUT_SECONDS:
-                    last_error = f"{label} 작업이 오래 응답하지 않아 자동으로 다시 시도합니다."
+
+                now = time.time()
+                if now - last_activity > STALL_TIMEOUT_SECONDS:
+                    last_error = "한컴 한글이 2분 동안 진행되지 않아 자동 재시도합니다."
                     on_progress(last_error)
                     try:
                         proc.kill()
@@ -76,15 +80,26 @@ def run_worker(args: list[str], success_file: str | None, on_progress, label: st
                         pass
                     _kill_new_hwp(before)
                     break
-                time.sleep(0.35)
+                if now - started > HARD_TIMEOUT_SECONDS:
+                    last_error = "전체 작업 시간이 너무 길어 자동 재시도합니다."
+                    on_progress(last_error)
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    _kill_new_hwp(before)
+                    break
+                time.sleep(0.3)
+
             try:
                 proc.wait(timeout=5)
             except Exception:
                 pass
         _kill_new_hwp(before)
         if attempt < WORKER_RETRIES:
+            on_progress("작업을 한 번 더 자동 시도합니다.")
             time.sleep(1.0)
-    raise RuntimeError(last_error or f"{label} 작업에 실패했습니다.")
+    raise RuntimeError(last_error or "학생별 HWP 생성에 실패했습니다.")
 
 class App(TkinterDnD.Tk):
     def __init__(self):
@@ -136,7 +151,7 @@ class App(TkinterDnD.Tk):
 
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=10)
-        self.btn = ttk.Button(actions, text="학생별 HWP 생성", command=self._start)
+        self.btn = ttk.Button(actions, text="학생별 HWP 빠른 생성", command=self._start)
         self.btn.pack(side="left")
         ttk.Button(actions, text="결과 폴더 열기", command=self._open_out).pack(side="left", padx=8)
         self.pb = ttk.Progressbar(actions, mode="indeterminate")
@@ -159,8 +174,7 @@ class App(TkinterDnD.Tk):
         self.after(0, apply)
 
     def _on_drop(self, ev):
-        paths = list(self.tk.splitlist(ev.data))
-        for p in paths:
+        for p in list(self.tk.splitlist(ev.data)):
             ext = Path(p).suffix.lower()
             if ext == ".xlsx":
                 self.excel_path.set(p)
@@ -216,39 +230,39 @@ class App(TkinterDnD.Tk):
 
             root = Path(self.output_dir.get())
             root.mkdir(parents=True, exist_ok=True)
-            folder_name = safe_name(f"{self.test_name.get()}_{self.test_date.get()}_개인별오답")
+            test_name = self.test_name.get().strip()
+            test_date = self.test_date.get().strip()
+            folder_name = safe_name(f"{test_name}_{test_date}_개인별오답")
             result_dir = root / folder_name
             result_dir.mkdir(parents=True, exist_ok=True)
             self.last_result_dir = result_dir
 
-            with tempfile.TemporaryDirectory(prefix="kimhyun_wrong_") as td:
-                work = Path(td)
-                base_pdf = str(work / "source.pdf")
-                self._log("한글 파일 접근은 프로그램이 자동 허용합니다. 이제 기다리기만 하면 됩니다.")
-                run_worker(["--hwp-worker", source, base_pdf], base_pdf, self._log, "시험지 준비")
+            targets = [s for s in self.data["students"] if s["wrongs"]]
+            if not targets:
+                raise RuntimeError("오답이 있는 학생이 없습니다.")
 
-                self._log("문항 위치를 자동 분석 중입니다.")
-                clips = detect_question_clips(base_pdf, self.data["question_count"])
-                images = render_question_images(base_pdf, clips, str(work / "question_images"))
-                self._log(f"문항 {len(images)}개 준비 완료.")
+            students = []
+            for s in targets:
+                student = str(s["name"])
+                filename = safe_name(f"{student}_{test_date}_오답.hwp")
+                students.append({
+                    "student": student,
+                    "test_name": test_name,
+                    "test_date": test_date,
+                    "wrongs": [int(q) for q in s["wrongs"]],
+                    "output_hwp": str(result_dir / filename),
+                })
 
-                targets = [s for s in self.data["students"] if s["wrongs"]]
-                for i, s in enumerate(targets, 1):
-                    student = str(s["name"])
-                    date_text = self.test_date.get().strip()
-                    filename = safe_name(f"{student}_{date_text}_오답.hwp")
-                    out_hwp = str(result_dir / filename)
-                    manifest = {
-                        "student": student,
-                        "test_name": self.test_name.get().strip(),
-                        "test_date": date_text,
-                        "wrongs": [int(q) for q in s["wrongs"]],
-                        "images": {str(q): images.get(int(q), []) for q in s["wrongs"]},
-                    }
-                    manifest_path = work / f"manifest_{i}.json"
-                    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
-                    self._log(f"[{i}/{len(targets)}] {student} HWP 생성 중")
-                    run_worker(["--student-hwp-worker", str(manifest_path), out_hwp], out_hwp, self._log, student)
+            with tempfile.TemporaryDirectory(prefix="kimhyun_job_") as td:
+                manifest_path = Path(td) / "batch_job.json"
+                manifest = {
+                    "source": str(Path(source).resolve()),
+                    "question_count": int(self.data["question_count"]),
+                    "students": students,
+                }
+                manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+                self._log("고속 모드 시작: 한글을 한 번만 실행해 전체 학생을 연속 처리합니다.")
+                run_batch_worker(str(manifest_path), self._log)
 
             self._log(f"모든 학생 HWP 생성 완료: {result_dir}")
             self.after(0, lambda: messagebox.showinfo("완료", f"완료했습니다.\n\n결과 폴더:\n{result_dir}"))
@@ -268,6 +282,11 @@ class App(TkinterDnD.Tk):
         os.startfile(str(p))
 
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == "--batch-hwp-worker":
+        from hwp_worker import batch_hwp_worker
+        if len(sys.argv) != 4:
+            raise SystemExit(3)
+        raise SystemExit(batch_hwp_worker(sys.argv[2], sys.argv[3]))
     if len(sys.argv) >= 2 and sys.argv[1] == "--hwp-worker":
         from hwp_worker import worker
         if len(sys.argv) != 5:
