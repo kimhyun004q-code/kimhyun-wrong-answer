@@ -113,6 +113,21 @@ def _label_para(
     return p
 
 
+def _start_endnotes_on_new_page(root) -> None:
+    """선택된 미주 해설 전체를 문제 본문 다음의 새 페이지에서 시작시킨다.
+
+    첫 번째 미주의 첫 문단에만 pageBreak를 주고, 이후 미주는 자연스럽게 이어지게 한다.
+    """
+    endnotes = root.xpath(".//hp:endNote", namespaces=NS)
+    for idx, note in enumerate(endnotes):
+        paras = note.xpath("./hp:subList/hp:p", namespaces=NS)
+        if not paras:
+            continue
+        first = paras[0]
+        first.set("pageBreak", "1" if idx == 0 else "0")
+        first.set("columnBreak", "0")
+
+
 class HwpxExam:
     """HWPX 시험지를 한 번 읽고, 한컴 실행 없이 학생별 HWPX를 만든다."""
 
@@ -169,9 +184,8 @@ class HwpxExam:
                 if txt in SKIP_HEADINGS:
                     continue
 
-                # 중요: 문항의 미주(endNote)를 제거하지 않는다.
-                # HWPX의 미주는 문항 문단 안의 ctrl/endNote에 본문까지 함께 들어 있으므로
-                # 해당 문단을 통째로 복사하면 선택된 오답 문항의 미주/해설도 같이 따라온다.
+                # 문항의 미주(endNote)를 제거하지 않는다.
+                # 미주 본문도 ctrl/endNote 내부에 있으므로 문항 문단을 통째로 보존한다.
                 cp = deepcopy(paragraph)
                 cp.set("pageBreak", "0")
                 cp.set("columnBreak", "0")
@@ -211,6 +225,9 @@ class HwpxExam:
             for p in self.blocks[q]:
                 new_root.append(deepcopy(p))
 
+        # 문제는 기존 2단 배치 그대로 두고, 미주 해설은 다음 새 페이지에서 시작한다.
+        _start_endnotes_on_new_page(new_root)
+
         return etree.tostring(
             new_root,
             xml_declaration=True,
@@ -225,7 +242,7 @@ class HwpxExam:
 
         section_data = self._build_section(student, test_date, wrongs)
         preview = (
-            f"{student}\n시험일 {test_date}\n오답문항: {', '.join(map(str, wrongs))}\n미주 포함\n"
+            f"{student}\n시험일 {test_date}\n오답문항: {', '.join(map(str, wrongs))}\n미주 포함 / 해설 새 페이지 시작\n"
         ).encode("utf-8")
 
         out = Path(output_path)
@@ -248,11 +265,14 @@ class HwpxExam:
             if check.read("mimetype") != b"application/hwp+zip":
                 raise ValueError("생성된 HWPX의 mimetype 검증에 실패했습니다.")
             check_root = etree.fromstring(check.read(SECTION_PATH))
-            endnote_count = len(check_root.xpath(".//hp:endNote", namespaces=NS))
-            if endnote_count != len(wrongs):
+            endnotes = check_root.xpath(".//hp:endNote", namespaces=NS)
+            if len(endnotes) != len(wrongs):
                 raise ValueError(
-                    f"생성 결과의 미주 수({endnote_count})가 오답 문항 수({len(wrongs)})와 일치하지 않습니다."
+                    f"생성 결과의 미주 수({len(endnotes)})가 오답 문항 수({len(wrongs)})와 일치하지 않습니다."
                 )
+            first_note_paras = endnotes[0].xpath("./hp:subList/hp:p", namespaces=NS) if endnotes else []
+            if not first_note_paras or first_note_paras[0].get("pageBreak") != "1":
+                raise ValueError("해설 새 페이지 시작 설정 검증에 실패했습니다.")
 
         os.replace(temp, out)
         return str(out)
