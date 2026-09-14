@@ -61,11 +61,7 @@ def _next_id(parent) -> int:
 
 
 def _build_cover_header(header_bytes: bytes) -> tuple[bytes, dict[str, str]]:
-    """표지 전용 문단/글자 스타일을 HWPX header.xml에 추가한다.
-
-    기존 문서 스타일 ID에 기대지 않고 직접 CENTER 문단과 표지용 글자 크기를 만들어
-    어떤 시험지에서도 표지 정렬/크기가 안정적으로 동일하게 나오게 한다.
-    """
+    """표지 전용 문단/글자 스타일을 HWPX header.xml에 추가한다."""
     root = etree.fromstring(header_bytes)
     chars = _find_local(root, "charProperties")
     paras = _find_local(root, "paraProperties")
@@ -78,10 +74,10 @@ def _build_cover_header(header_bytes: bytes) -> tuple[bytes, dict[str, str]]:
     ids: dict[str, str] = {}
     next_char = _next_id(chars)
     char_specs = [
-        ("spacer", 900),      # 9pt: 세로 위치 조절용
-        ("info", 2700),      # 27pt: 반명/회차/날짜
-        ("student", 4000),   # 40pt: 학생명(기존 크기 유지)
-        ("slogan", 3000),    # 30pt: 슬로건
+        ("spacer", 700),      # 7pt: 세로 위치 조절용
+        ("info", 3200),      # 32pt: 반명/회차/날짜
+        ("student", 4500),   # 45pt: 학생명
+        ("slogan", 3400),    # 34pt: 슬로건
     ]
     for key, height in char_specs:
         cp = deepcopy(base_char)
@@ -227,23 +223,25 @@ def _append_cover(
     # 첫 페이지는 1단 + 바탕쪽 감추기 전용 구역.
     root.append(deepcopy(cover_template))
 
-    # 표지 전체를 한 덩어리로 페이지 중앙 부근에 배치한다.
-    for _ in range(8):
+    # 시작 위치를 이전보다 위로 올린다.
+    for _ in range(3):
         root.append(_cover_para("", styles, "spacer"))
 
     class_text = (class_name or "").strip() or "-"
     round_text = (round_name or "").strip() or "-"
     exam_date = (test_date or "").strip() or "-"
 
-    root.append(_cover_para(f"반명  {class_text}    ·    회차  {round_text}", styles, "info"))
+    # 반명 / 회차 / 시험응시일을 각각 한 줄로 배치한다.
+    root.append(_cover_para(f"반명  {class_text}", styles, "info"))
+    root.append(_cover_para(f"회차  {round_text}", styles, "info"))
     root.append(_cover_para(f"시험응시일  {exam_date}", styles, "info"))
 
-    for _ in range(4):
+    for _ in range(2):
         root.append(_cover_para("", styles, "spacer"))
 
     root.append(_cover_para(f"{student}(오답노트)", styles, "student"))
 
-    for _ in range(4):
+    for _ in range(2):
         root.append(_cover_para("", styles, "spacer"))
 
     root.append(_cover_para("성적이 오르는 신뢰의 이름 김현수학", styles, "slogan"))
