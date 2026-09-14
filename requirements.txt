@@ -1,6 +1,4 @@
 openpyxl==3.1.5
-pywin32==311
-psutil==7.0.0
+lxml==5.4.0
 tkinterdnd2==0.4.3
-pyhwpx==1.6.6
 pyinstaller==6.15.0
