@@ -1,0 +1,329 @@
+name: Build GPT HWPX Robust Fraction Fix
+
+on:
+  push:
+    branches: [gpt-to-hwpx-build]
+    paths:
+      - '.github/workflows/build-gpt-to-hwpx-frac-v2.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download verified previous one-click EXE
+        uses: actions/download-artifact@v4
+        with:
+          name: GPT_HWPX_SubscriptFix_Windows
+          path: prev
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 35072367964
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pyinstaller
+
+      - name: Create robust fraction wrapper
+        shell: pwsh
+        run: |
+          $inner=(Get-ChildItem 'prev' -Recurse -Filter 'GPT_HWPX_원클릭_첨자수정.exe' | Select-Object -First 1).FullName
+          if(-not $inner){ throw 'previous verified EXE not found' }
+          New-Item -ItemType Directory -Force -Path app | Out-Null
+          Copy-Item $inner 'app/GPT_HWPX_원클릭_첨자수정.exe' -Force
+
+          Set-Content 'app/wrapper.py' -Encoding utf8 -Value @'
+          import ctypes, os, subprocess, sys, tempfile, time
+          from pathlib import Path
+
+          CF_UNICODETEXT=13
+          GMEM_MOVEABLE=0x0002
+          CREATE_NO_WINDOW=0x08000000
+          u=ctypes.windll.user32
+          k=ctypes.windll.kernel32
+          u.OpenClipboard.argtypes=[ctypes.c_void_p]; u.OpenClipboard.restype=ctypes.c_bool
+          u.CloseClipboard.argtypes=[]; u.CloseClipboard.restype=ctypes.c_bool
+          u.EmptyClipboard.argtypes=[]; u.EmptyClipboard.restype=ctypes.c_bool
+          u.GetClipboardData.argtypes=[ctypes.c_uint]; u.GetClipboardData.restype=ctypes.c_void_p
+          u.SetClipboardData.argtypes=[ctypes.c_uint,ctypes.c_void_p]; u.SetClipboardData.restype=ctypes.c_void_p
+          k.GlobalAlloc.argtypes=[ctypes.c_uint,ctypes.c_size_t]; k.GlobalAlloc.restype=ctypes.c_void_p
+          k.GlobalLock.argtypes=[ctypes.c_void_p]; k.GlobalLock.restype=ctypes.c_void_p
+          k.GlobalUnlock.argtypes=[ctypes.c_void_p]; k.GlobalUnlock.restype=ctypes.c_bool
+
+          def msg(t):
+              u.MessageBoxW(None,t,'GPT → HWPX',0x10)
+
+          def resource(n):
+              return Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/n
+
+          def get_clipboard():
+              for _ in range(15):
+                  if u.OpenClipboard(None):
+                      try:
+                          h=u.GetClipboardData(CF_UNICODETEXT)
+                          if not h:return ''
+                          p=k.GlobalLock(h)
+                          if not p:return ''
+                          try:return ctypes.wstring_at(p)
+                          finally:k.GlobalUnlock(h)
+                      finally:u.CloseClipboard()
+                  time.sleep(.05)
+              return ''
+
+          def set_clipboard(text):
+              data=text.encode('utf-16-le')+b'\x00\x00'
+              if not u.OpenClipboard(None):
+                  raise RuntimeError('클립보드를 열 수 없습니다.')
+              try:
+                  u.EmptyClipboard()
+                  h=k.GlobalAlloc(GMEM_MOVEABLE,len(data))
+                  if not h:raise RuntimeError('클립보드 메모리 할당 실패')
+                  p=k.GlobalLock(h)
+                  ctypes.memmove(p,data,len(data))
+                  k.GlobalUnlock(h)
+                  if not u.SetClipboardData(CF_UNICODETEXT,h):
+                      raise RuntimeError('클립보드 쓰기 실패')
+              finally:
+                  u.CloseClipboard()
+
+          def skip_ws(s,i):
+              while i<len(s) and s[i].isspace(): i+=1
+              return i
+
+          def balanced(s,i,op='{',cl='}'):
+              if i>=len(s) or s[i]!=op:return None,i
+              depth=1;j=i+1
+              while j<len(s) and depth:
+                  if s[j]==op:depth+=1
+                  elif s[j]==cl:depth-=1
+                  j+=1
+              if depth:return None,i
+              return s[i+1:j-1],j
+
+          def command_token(s,i):
+              if i>=len(s) or s[i]!='\\':return None,i
+              j=i+1
+              while j<len(s) and s[j].isalpha():j+=1
+              if j==i+1:return None,i
+              token=s[i:j]
+              # Include one braced argument for commands such as \\sqrt{...}.
+              k=skip_ws(s,j)
+              if k<len(s) and s[k]=='{':
+                  g,nxt=balanced(s,k)
+                  if g is not None:return token+'{'+g+'}',nxt
+              return token,j
+
+          def simple_token(s,i):
+              i=skip_ws(s,i)
+              if i>=len(s):return None,i
+              if s[i]=='{':
+                  g,nxt=balanced(s,i)
+                  return (g,nxt) if g is not None else (None,i)
+              if s[i]=='\\':
+                  return command_token(s,i)
+              if s[i]=='(':
+                  g,nxt=balanced(s,i,'(',')')
+                  if g is not None:return '('+g+')',nxt
+              # LaTeX's unbraced argument is one token. A leading sign is kept with a numeric token.
+              j=i
+              if s[j] in '+-' and j+1<len(s) and (s[j+1].isalnum() or s[j+1]=='.'):j+=1
+              if j<len(s):
+                  if s[j].isalnum() or s[j]=='.':
+                      j+=1
+                      return s[i:j],j
+                  return s[j],j+1
+              return None,i
+
+          def fraction_args(s,i):
+              i=skip_ws(s,i)
+              # Braced numerator: parse it, then independently normalize denominator.
+              if i<len(s) and s[i]=='{':
+                  num,j=balanced(s,i)
+                  if num is None:return None
+                  den,k=simple_token(s,j)
+                  if den is None:return None
+                  return num,den,k
+
+              # If numerator starts with parentheses, support products such as
+              # \\frac(m-1)(3m-4)2 by treating consecutive parenthesized factors
+              # as the numerator when a final simple denominator token exists.
+              if i<len(s) and s[i]=='(':
+                  groups=[];j=i
+                  while True:
+                      j=skip_ws(s,j)
+                      if j>=len(s) or s[j]!='(':break
+                      g,nxt=balanced(s,j,'(',')')
+                      if g is None:break
+                      groups.append('('+g+')');j=nxt
+                  den,k=simple_token(s,j)
+                  if len(groups)>=1 and den is not None:
+                      return ''.join(groups),den,k
+                  if len(groups)>=2:
+                      return groups[0],groups[1],j
+
+              num,j=simple_token(s,i)
+              if num is None:return None
+              den,k=simple_token(s,j)
+              if den is None:return None
+              return num,den,k
+
+          def normalize_fractions(text):
+              out=[];i=0
+              cmds=('\\dfrac','\\tfrac','\\frac')
+              while i<len(text):
+                  cmd=None
+                  for c in cmds:
+                      if text.startswith(c,i):cmd=c;break
+                  if cmd is None:
+                      out.append(text[i]);i+=1;continue
+                  parsed=fraction_args(text,i+len(cmd))
+                  if parsed is None:
+                      out.append(cmd);i+=len(cmd);continue
+                  num,den,nxt=parsed
+                  out.append(cmd+'{'+num+'}{'+den+'}')
+                  i=nxt
+              normalized=''.join(out)
+              # Run twice so nested shorthand fractions are also normalized.
+              if normalized!=text:
+                  second=[];i=0
+                  while i<len(normalized):
+                      cmd=None
+                      for c in cmds:
+                          if normalized.startswith(c,i):cmd=c;break
+                      if cmd is None:
+                          second.append(normalized[i]);i+=1;continue
+                      parsed=fraction_args(normalized,i+len(cmd))
+                      if parsed is None:
+                          second.append(cmd);i+=len(cmd);continue
+                      num,den,nxt=parsed
+                      second.append(cmd+'{'+num+'}{'+den+'}')
+                      i=nxt
+                  normalized=''.join(second)
+              return normalized
+
+          def run_inner_with_file(text,args):
+              inner=resource('GPT_HWPX_원클릭_첨자수정.exe')
+              if not inner.exists():raise RuntimeError('내부 변환기를 찾지 못했습니다.')
+              with tempfile.TemporaryDirectory(prefix='gpt_fracfix2_') as td:
+                  f=Path(td)/'normalized.md'
+                  f.write_text(normalize_fractions(text),encoding='utf-8')
+                  cmd=[str(inner),'--test-input',str(f)]
+                  cmd.extend(args)
+                  p=subprocess.run(cmd,creationflags=CREATE_NO_WINDOW,timeout=180)
+                  return p.returncode
+
+          def main():
+              a=sys.argv[1:];test=None;passthrough=[];i=0
+              while i<len(a):
+                  if a[i]=='--test-input' and i+1<len(a):
+                      test=Path(a[i+1]);i+=2;continue
+                  passthrough.append(a[i]);i+=1
+              try:
+                  inner=resource('GPT_HWPX_원클릭_첨자수정.exe')
+                  if test is not None:
+                      text=test.read_text(encoding='utf-8-sig')
+                      return run_inner_with_file(text,passthrough)
+                  original=get_clipboard()
+                  if not original.strip():
+                      msg('ChatGPT 답변을 먼저 복사(Ctrl+C)한 뒤 다시 실행해주세요.')
+                      return 2
+                  normalized=normalize_fractions(original)
+                  set_clipboard(normalized)
+                  try:
+                      si=subprocess.STARTUPINFO();si.dwFlags|=subprocess.STARTF_USESHOWWINDOW
+                      p=subprocess.run([str(inner)],startupinfo=si,creationflags=CREATE_NO_WINDOW,timeout=180)
+                      return p.returncode
+                  finally:
+                      try:set_clipboard(original)
+                      except:pass
+              except Exception as e:
+                  msg(str(e));return 1
+
+          if __name__=='__main__':raise SystemExit(main())
+          '@
+
+          Set-Content 'app/sample.md' -Encoding utf8 -Value @'
+          정답은 `\boxed{47}`입니다.
+
+          [해설]
+          먼저
+
+          $$
+          b=G(2)=\frac83+2-12=-\frac{22}{3}
+          $$
+
+          이고, 이를 계산하면
+
+          $$
+          \sum_{n=1}^{m-1}a_n=-\frac{(m-1)(3m-4)}2
+          $$
+
+          이며
+
+          $$
+          -\sum_{n=m}^{10}a_n=-\frac{(11-m)(34-3m)}2
+          $$
+
+          이다.
+
+          $$
+          \sum_{n=1}^{\infty}a_n b_n
+          $$
+          '@
+
+          Set-Content 'app/check.py' -Encoding utf8 -Value @'
+          import sys,zipfile,xml.etree.ElementTree as E
+          ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}
+          with zipfile.ZipFile(sys.argv[1]) as z:root=E.fromstring(z.read('Contents/section0.xml'))
+          txt=''.join((x.text or '') for x in root.findall('.//hp:t',ns))
+          scripts=[x.text or '' for x in root.findall('.//hp:equation/hp:script',ns)]
+          joined='\n'.join(scripts)
+          assert txt.startswith('[정답] 47'),repr(txt[:100])
+          assert 'frac' not in joined.lower(),repr(scripts)
+          assert '{8} over {3}' in joined,repr(scripts)
+          assert '{22} over {3}' in joined,repr(scripts)
+          assert '(m-1)(3m-4)' in joined and 'over {2}' in joined,repr(scripts)
+          assert '(11-m)(34-3m)' in joined and joined.count('over {2}')>=2,repr(scripts)
+          assert 'a_{n}' in joined and 'b_{n}' in joined,repr(scripts)
+          assert 'LEFT' not in joined.upper() and 'RIGHT' not in joined.upper(),repr(scripts)
+          print('ROBUST FRACTION + PREVIOUS FIXES OK')
+          print(scripts)
+          '@
+
+      - name: Build robust fraction one-click EXE
+        shell: pwsh
+        run: |
+          $inner=(Resolve-Path 'app/GPT_HWPX_원클릭_첨자수정.exe').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name GPT_HWPX_원클릭_분수정밀보정 `
+            --distpath dist `
+            --workpath build `
+            --add-binary "$inner;." `
+            app/wrapper.py
+
+      - name: End-to-end test
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $p=Start-Process '.\dist\GPT_HWPX_원클릭_분수정밀보정.exe' -ArgumentList @('--test-input','app/sample.md','--output-dir','out','--no-open') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "wrapper exit $($p.ExitCode)"}
+          $o=Get-ChildItem 'out\*.hwpx'|Sort-Object LastWriteTime -Descending|Select-Object -First 1
+          if($null -eq $o){throw 'HWPX not created'}
+          python -m zipfile -t $o.FullName
+          if($LASTEXITCODE -ne 0){throw 'HWPX ZIP check failed'}
+          python app/check.py $o.FullName
+          if($LASTEXITCODE -ne 0){throw 'robust fraction regression failed'}
+          Copy-Item $o.FullName 'out/GPT_HWPX_분수정밀보정_테스트.hwpx' -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_RobustFraction_Windows
+          path: |
+            dist/GPT_HWPX_원클릭_분수정밀보정.exe
+            out/GPT_HWPX_분수정밀보정_테스트.hwpx
+          if-no-files-found: error
+          retention-days: 7
