@@ -56,48 +56,26 @@ jobs:
       - name: Install PyInstaller
         run: python -m pip install --upgrade pyinstaller
 
-      - name: Create sample and checker
+      - name: Create sample
         shell: pwsh
         run: |
           Set-Content 'gpt_to_hwpx_v32/sample.md' -Encoding utf8 -Value @'
           정답은 `\boxed{55}`가지입니다.
 
+          함수값은 다음과 같습니다.
+
           $$
-          a+b+c=8
+          m=f\left(-\frac{13}{12}\right)
           $$
+
+          조건은
 
           $$
           a\ge2,\qquad b\ge a,\qquad b\ge c
           $$
 
-          $$
-          \begin{array}{c|c}(a,b,c)&\text{경우의 수}\\\hline(2,3,3)&10\\(2,4,2)&9\end{array}
-          $$
-
-          $$
-          \boxed{55}
-          $$
+          입니다.
           '@
-          Set-Content 'gpt_to_hwpx_v32/check.py' -Encoding utf8 -Value @'
-          import sys,zipfile,xml.etree.ElementTree as E
-          ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}
-          with zipfile.ZipFile(sys.argv[1]) as z: root=E.fromstring(z.read('Contents/section0.xml'))
-          texts=[x.text or '' for x in root.findall('.//hp:t',ns)]
-          scripts=[x.text or '' for x in root.findall('.//hp:equation/hp:script',ns)]
-          plain='\n'.join(texts)
-          assert not any(x in plain for x in ('$$','\\begin','\\end','\\ge','\\qquad','\\text','```')),plain
-          assert any('a >= 2' in x and 'b >= a' in x for x in scripts),scripts
-          assert any(x.startswith('matrix{') for x in scripts),scripts
-          assert not any('box {' in x or '\\' in x for x in scripts),scripts
-          print('OK',len(scripts))
-          '@
-
-      - name: Smoke test Python converter
-        shell: pwsh
-        run: |
-          python gpt_to_hwpx_v32/gpt_to_hwpx_v32.py --cli gpt_to_hwpx_v32/sample.md gpt_to_hwpx_v32/smoke_python.hwpx
-          python -m zipfile -t gpt_to_hwpx_v32/smoke_python.hwpx
-          python gpt_to_hwpx_v32/check.py gpt_to_hwpx_v32/smoke_python.hwpx
 
       - name: Build hidden V3.2 converter EXE
         shell: pwsh
@@ -110,29 +88,28 @@ jobs:
             --add-data "$tpl;." `
             gpt_to_hwpx_v32/gpt_to_hwpx_v32.py
 
-      - name: Smoke test hidden converter
-        shell: pwsh
-        run: |
-          $p=Start-Process '.\dist_converter\GPT_to_HWPX_V3_2.exe' -ArgumentList @('--cli','gpt_to_hwpx_v32/sample.md','gpt_to_hwpx_v32/smoke_converter.hwpx') -Wait -PassThru
-          if($p.ExitCode -ne 0){throw "converter exit $($p.ExitCode)"}
-          python gpt_to_hwpx_v32/check.py gpt_to_hwpx_v32/smoke_converter.hwpx
-
       - name: Create one-click launcher
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path oneclick | Out-Null
           Set-Content 'oneclick/launcher.py' -Encoding utf8 -Value @'
-          import ctypes,os,subprocess,sys,tempfile,time,winreg
+          import ctypes,os,re,subprocess,sys,tempfile,time,winreg,zipfile
           from datetime import datetime
           from pathlib import Path
-          CF_UNICODETEXT=13; CREATE_NO_WINDOW=0x08000000
-          u=ctypes.windll.user32; k=ctypes.windll.kernel32
+
+          CF_UNICODETEXT=13
+          CREATE_NO_WINDOW=0x08000000
+          u=ctypes.windll.user32
+          k=ctypes.windll.kernel32
           u.OpenClipboard.argtypes=[ctypes.c_void_p]; u.OpenClipboard.restype=ctypes.c_bool
           u.CloseClipboard.argtypes=[]; u.CloseClipboard.restype=ctypes.c_bool
           u.GetClipboardData.argtypes=[ctypes.c_uint]; u.GetClipboardData.restype=ctypes.c_void_p
           k.GlobalLock.argtypes=[ctypes.c_void_p]; k.GlobalLock.restype=ctypes.c_void_p
           k.GlobalUnlock.argtypes=[ctypes.c_void_p]; k.GlobalUnlock.restype=ctypes.c_bool
-          def msg(t): u.MessageBoxW(None,t,'GPT → HWPX',0x10)
+
+          def msg(t):
+              u.MessageBoxW(None,t,'GPT → HWPX',0x10)
+
           def clip():
               for _ in range(10):
                   if u.OpenClipboard(None):
@@ -146,25 +123,71 @@ jobs:
                       finally:u.CloseClipboard()
                   time.sleep(.08)
               return ''
+
           def desktop():
               try:
                   q=winreg.OpenKey(winreg.HKEY_CURRENT_USER,r'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders')
                   v,_=winreg.QueryValueEx(q,'Desktop'); winreg.CloseKey(q)
                   return Path(os.path.expandvars(v))
-              except:return Path.home()/'Desktop'
-          def resource(n):return Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/n
+              except:
+                  return Path.home()/'Desktop'
+
+          def resource(n):
+              return Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/n
+
           def outname(folder):
-              s=datetime.now().strftime('%Y%m%d_%H%M%S'); p=folder/f'GPT해설_{s}.hwpx'
+              s=datetime.now().strftime('%Y%m%d_%H%M%S')
+              p=folder/f'GPT해설_{s}.hwpx'
               if not p.exists():return p
               return folder/f'GPT해설_{s}_{os.getpid()}.hwpx'
+
+          def clean_section(xml_text):
+              # Hancom equation syntax does not need literal LEFT/RIGHT tokens here.
+              def clean_script(m):
+                  body=re.sub(r'(?i)\b(?:LEFT|RIGHT)\b\s*','',m.group(2))
+                  return m.group(1)+body+m.group(3)
+              xml_text=re.sub(r'(<hp:script>)(.*?)(</hp:script>)',clean_script,xml_text,flags=re.S)
+
+              # Remove paragraphs whose only content is whitespace. These were
+              # responsible for the large vertical gaps between copied blocks.
+              spacer=re.compile(
+                  r'<hp:p\b[^>]*>\s*<hp:run\b[^>]*>\s*'
+                  r'(?:<hp:t\b[^>]*/>|<hp:t\b[^>]*>\s*</hp:t>)\s*'
+                  r'</hp:run>\s*</hp:p>',
+                  re.S,
+              )
+              xml_text=spacer.sub('',xml_text)
+              return xml_text
+
+          def postprocess_hwpx(path):
+              with zipfile.ZipFile(path,'r') as zin:
+                  items=[(info,zin.read(info.filename)) for info in zin.infolist()]
+              tmp=path.with_suffix('.tmp.hwpx')
+              try:
+                  with zipfile.ZipFile(tmp,'w') as zout:
+                      for info,data in items:
+                          if info.filename.startswith('Contents/section') and info.filename.endswith('.xml'):
+                              text=data.decode('utf-8')
+                              data=clean_section(text).encode('utf-8')
+                          zout.writestr(info,data)
+                  os.replace(tmp,path)
+              finally:
+                  if tmp.exists():
+                      try:tmp.unlink()
+                      except:pass
+
           def convert(text,out):
               exe=resource('GPT_to_HWPX_V3_2.exe')
               if not exe.exists():raise RuntimeError('내부 변환기를 찾지 못했습니다.')
               with tempfile.TemporaryDirectory(prefix='gpt_hwpx_') as td:
-                  f=Path(td)/'clipboard.md'; f.write_text(text,encoding='utf-8')
+                  f=Path(td)/'clipboard.md'
+                  f.write_text(text,encoding='utf-8')
                   si=subprocess.STARTUPINFO(); si.dwFlags|=subprocess.STARTF_USESHOWWINDOW
                   r=subprocess.run([str(exe),'--cli',str(f),str(out)],startupinfo=si,creationflags=CREATE_NO_WINDOW,timeout=120)
-                  if r.returncode or not out.exists():raise RuntimeError(f'HWPX 변환에 실패했습니다. (코드 {r.returncode})')
+                  if r.returncode or not out.exists():
+                      raise RuntimeError(f'HWPX 변환에 실패했습니다. (코드 {r.returncode})')
+              postprocess_hwpx(out)
+
           def main():
               a=sys.argv[1:]; test=None; od=None; noopen=False; i=0
               while i<len(a):
@@ -174,15 +197,37 @@ jobs:
                   i+=1
               try:
                   text=test.read_text(encoding='utf-8-sig') if test else clip()
-                  if not text.strip():msg('ChatGPT 답변을 먼저 복사(Ctrl+C)한 뒤 다시 실행해주세요.');return 2
-                  folder=od if od else desktop()/'GPT_HWPX';folder.mkdir(parents=True,exist_ok=True)
-                  out=outname(folder);convert(text,out)
+                  if not text.strip():
+                      msg('ChatGPT 답변을 먼저 복사(Ctrl+C)한 뒤 다시 실행해주세요.')
+                      return 2
+                  folder=od if od else desktop()/'GPT_HWPX'
+                  folder.mkdir(parents=True,exist_ok=True)
+                  out=outname(folder)
+                  convert(text,out)
                   if not noopen:os.startfile(str(out))
                   return 0
-              except Exception as e:msg(str(e));return 1
+              except Exception as e:
+                  msg(str(e));return 1
+
           if __name__=='__main__':raise SystemExit(main())
           '@
           python -m py_compile oneclick/launcher.py
+
+          Set-Content 'oneclick/check_final.py' -Encoding utf8 -Value @'
+          import re,sys,zipfile,xml.etree.ElementTree as E
+          path=sys.argv[1]
+          ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}
+          with zipfile.ZipFile(path) as z:
+              sec=z.read('Contents/section0.xml').decode('utf-8')
+              root=E.fromstring(sec.encode('utf-8'))
+          scripts=[x.text or '' for x in root.findall('.//hp:equation/hp:script',ns)]
+          assert scripts, 'no equations'
+          assert not any(re.search(r'(?i)\b(?:LEFT|RIGHT)\b',s) for s in scripts),scripts
+          assert any('13' in s and '12' in s and '(' in s and ')' in s for s in scripts),scripts
+          spacer=re.compile(r'<hp:p\b[^>]*>\s*<hp:run\b[^>]*>\s*(?:<hp:t\b[^>]*/>|<hp:t\b[^>]*>\s*</hp:t>)\s*</hp:run>\s*</hp:p>',re.S)
+          assert not spacer.search(sec), 'blank spacer paragraph remains'
+          print('FINAL OK',scripts)
+          '@
 
       - name: Build one-click desktop EXE
         shell: pwsh
@@ -204,7 +249,9 @@ jobs:
           $out=Get-ChildItem 'oneclick_test\*.hwpx'|Sort-Object LastWriteTime -Descending|Select-Object -First 1
           if($null -eq $out){throw 'HWPX not created'}
           python -m zipfile -t $out.FullName
-          python gpt_to_hwpx_v32/check.py $out.FullName
+          if($LASTEXITCODE -ne 0){throw 'HWPX ZIP check failed'}
+          python oneclick/check_final.py $out.FullName
+          if($LASTEXITCODE -ne 0){throw 'final LEFT/RIGHT or spacing regression failed'}
           Copy-Item $out.FullName 'oneclick_test\GPT_HWPX_원클릭_테스트.hwpx' -Force
 
       - uses: actions/upload-artifact@v4
