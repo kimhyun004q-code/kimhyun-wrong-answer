@@ -1,4 +1,4 @@
-name: Build GPT to HWPX Windows EXE
+name: Build GPT to HWPX V2 Windows EXE
 
 on:
   push:
@@ -19,64 +19,66 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Reconstruct source and template
+      - name: Reconstruct V2 source and template
         shell: pwsh
         run: |
-          $src = ''
-          Get-ChildItem 'gpt_to_hwpx_build/source_*.b64' | Sort-Object Name | ForEach-Object { $src += Get-Content $_.FullName -Raw }
-          [IO.File]::WriteAllBytes('gpt_to_hwpx_build/gpt_to_hwpx.py', [Convert]::FromBase64String($src))
+          New-Item -ItemType Directory -Force -Path 'gpt_to_hwpx_v2' | Out-Null
+          python -c "import base64,gzip,pathlib; p=pathlib.Path('gpt_to_hwpx_v2/source.py.gz.b64'); pathlib.Path('gpt_to_hwpx_v2/gpt_to_hwpx_v2.py').write_bytes(gzip.decompress(base64.b64decode(p.read_text())))"
 
           $tpl = ''
           Get-ChildItem 'gpt_to_hwpx_build/template_*.b64' | Sort-Object Name | ForEach-Object { $tpl += Get-Content $_.FullName -Raw }
-          [IO.File]::WriteAllBytes('gpt_to_hwpx_build/direct_hwpx_template.hwpx', [Convert]::FromBase64String($tpl))
+          [IO.File]::WriteAllBytes('gpt_to_hwpx_v2/direct_hwpx_template.hwpx', [Convert]::FromBase64String($tpl))
 
       - name: Install PyInstaller
         run: python -m pip install --upgrade pyinstaller
 
-      - name: Smoke test Python converter
+      - name: Create regression sample
         shell: pwsh
         run: |
-          Set-Content -Path 'gpt_to_hwpx_build/sample.txt' -Encoding utf8 -Value @'
-          [출제의도]
-          이차방정식의 근을 구한다.
-
+          Set-Content -Path 'gpt_to_hwpx_v2/sample.txt' -Encoding utf8 -Value @'
           [해설]
-          $x^2-5x+6=0$에서 $(x-2)(x-3)=0$이므로 $x=2,3$이다.
-          분수 확인: $\frac{1}{2}$
-          켤레/바 확인: $\overline{z}$
-
-          [정답]
-          $2,3$
+          삼각형 $\triangle ABC$에서 $\overline{AB}=6$, $\overline{AC}=8$, $\angle A=120^\circ$이다.
+          $$\overline{BC}^2=6^2+8^2-2\cdot 6\cdot 8\cos 120^\circ$$
+          따라서 $\overline{BC}=2\sqrt{37}$이다.
+          분수는 $\frac{1}{2}$이고, 극한은 $\lim_{x\to\infty}\frac{f(x)}{2x^2+1}=3$이다.
+          합은 $\sum_{k=1}^{10}a_k$, 적분은 $\int_0^1 f(x)\,dx$이다.
+          조합은 $\binom{5}{2}=10$이다.
+          집합은 $A\cap B\ne\emptyset$이고 $3\notin A$이다.
+          괄호는 $\left(\frac{1}{2}\right)^x$이다.
           '@
-          python gpt_to_hwpx_build/gpt_to_hwpx.py --cli gpt_to_hwpx_build/sample.txt gpt_to_hwpx_build/smoke.hwpx
-          if ($LASTEXITCODE -ne 0) { throw "Python converter exited with $LASTEXITCODE" }
-          if (!(Test-Path 'gpt_to_hwpx_build/smoke.hwpx')) { throw 'Python smoke test failed: HWPX not created' }
-          python -m zipfile -t gpt_to_hwpx_build/smoke.hwpx
-          if ($LASTEXITCODE -ne 0) { throw 'Python HWPX ZIP integrity check failed' }
 
-      - name: Build single EXE
+      - name: Smoke test Python V2 converter
+        shell: pwsh
+        run: |
+          python gpt_to_hwpx_v2/gpt_to_hwpx_v2.py --convert gpt_to_hwpx_v2/sample.txt gpt_to_hwpx_v2/smoke.hwpx
+          if ($LASTEXITCODE -ne 0) { throw "Python converter exited with $LASTEXITCODE" }
+          python -m zipfile -t gpt_to_hwpx_v2/smoke.hwpx
+          if ($LASTEXITCODE -ne 0) { throw 'Python HWPX ZIP integrity check failed' }
+          python -c "import zipfile,xml.etree.ElementTree as E; ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}; z=zipfile.ZipFile('gpt_to_hwpx_v2/smoke.hwpx'); r=E.fromstring(z.read('Contents/section0.xml')); s=[(x.text or '') for x in r.findall('.//hp:equation/hp:script',ns)]; req=['{bar {rm BC it}} ^{2}','{1} over {2}','lim _{x rarrow INF','sum _{k=1}','{}_{5} rm C','LEFT ( {1} over {2} RIGHT ) ^{x}']; assert all(any(q in x for x in s) for q in req), s; print('Regression scripts OK:',len(s))"
+
+      - name: Build single V2 EXE
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean --onefile --windowed `
-            --name GPT_to_HWPX `
-            --add-data 'gpt_to_hwpx_build/direct_hwpx_template.hwpx;.' `
-            gpt_to_hwpx_build/gpt_to_hwpx.py
+            --name GPT_to_HWPX_V2 `
+            --add-data 'gpt_to_hwpx_v2/direct_hwpx_template.hwpx;.' `
+            gpt_to_hwpx_v2/gpt_to_hwpx_v2.py
 
-      - name: Smoke test EXE converter
+      - name: Smoke test V2 EXE converter
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath '.\dist\GPT_to_HWPX.exe' `
-            -ArgumentList @('--cli', 'gpt_to_hwpx_build/sample.txt', 'gpt_to_hwpx_build/smoke_exe.hwpx') `
+          $p = Start-Process -FilePath '.\dist\GPT_to_HWPX_V2.exe' `
+            -ArgumentList @('--convert', 'gpt_to_hwpx_v2/sample.txt', 'gpt_to_hwpx_v2/smoke_exe.hwpx') `
             -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "EXE converter exited with $($p.ExitCode)" }
-          if (!(Test-Path 'gpt_to_hwpx_build/smoke_exe.hwpx')) { throw 'EXE smoke test failed: HWPX not created' }
-          python -m zipfile -t gpt_to_hwpx_build/smoke_exe.hwpx
+          if (!(Test-Path 'gpt_to_hwpx_v2/smoke_exe.hwpx')) { throw 'EXE smoke test failed: HWPX not created' }
+          python -m zipfile -t gpt_to_hwpx_v2/smoke_exe.hwpx
           if ($LASTEXITCODE -ne 0) { throw 'EXE HWPX ZIP integrity check failed' }
 
-      - name: Upload Windows EXE
+      - name: Upload Windows V2 EXE
         uses: actions/upload-artifact@v4
         with:
-          name: GPT_to_HWPX_Windows
-          path: dist/GPT_to_HWPX.exe
+          name: GPT_to_HWPX_V2_Windows
+          path: dist/GPT_to_HWPX_V2.exe
           if-no-files-found: error
           retention-days: 7
