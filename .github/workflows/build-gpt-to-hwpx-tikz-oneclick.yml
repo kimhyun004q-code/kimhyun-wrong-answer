@@ -1,0 +1,107 @@
+name: Build GPT HWPX TikZ OneClick AnswerFirst
+
+on:
+  push:
+    branches: [gpt-to-hwpx-build]
+    paths:
+      - 'gpt_hwpx_tikz/oneclick.py'
+      - 'gpt_hwpx_tikz/app.py'
+      - '.github/workflows/build-gpt-to-hwpx-tikz-oneclick.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download current verified HWPX core
+        uses: actions/download-artifact@v4
+        with:
+          name: GPT_HWPX_GeometrySymbols_Windows
+          path: prev
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 35077164531
+
+      - name: Prepare verified core EXE
+        shell: pwsh
+        run: |
+          $inner=(Get-ChildItem 'prev' -Recurse -Filter 'GPT_HWPX_원클릭_기하기호보정.exe' | Select-Object -First 1).FullName
+          if(-not $inner){ throw 'verified geometry-symbol core EXE not found' }
+          Copy-Item $inner 'gpt_hwpx_tikz/GPT_HWPX_원클릭_기하기호보정.exe' -Force
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pyinstaller pymupdf pillow
+
+      - name: Test answer normalization
+        shell: pwsh
+        run: |
+          Set-Content 'malformed.txt' -Encoding utf8 -Value @'
+          [정답]
+          [해설]
+          30번
+          [해설]
+          함수의 값을 계산하면
+          [[DISPLAY_EQ]]
+          f(1)=2
+          [[/DISPLAY_EQ]]
+          이다.
+          '@
+          python -c "import sys;sys.path.insert(0,'gpt_hwpx_tikz');import oneclick;t,a=oneclick.normalize_answer_first(open('malformed.txt',encoding='utf-8-sig').read());print(repr(t));assert a=='30번',(a,t);assert t.startswith('[정답] 30번\n[해설]\n'),t;assert t.count('[정답]')==1,t;assert t.count('[해설]')==1,t;print('ANSWER NORMALIZE OK')"
+
+      - name: Build one-click EXE
+        shell: pwsh
+        run: |
+          $inner=(Resolve-Path 'gpt_hwpx_tikz/GPT_HWPX_원클릭_기하기호보정.exe').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name GPT_HWPX_원클릭_수식_TikZ_정답맨앞 `
+            --distpath dist --workpath build_oneclick_tikz `
+            --add-binary "$inner;." `
+            --collect-all pymupdf `
+            --paths gpt_hwpx_tikz `
+            gpt_hwpx_tikz/oneclick.py
+
+      - name: End-to-end EXE test
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $p=Start-Process '.\dist\GPT_HWPX_원클릭_수식_TikZ_정답맨앞.exe' -ArgumentList @('--test-input','malformed.txt','--output-dir','out','--no-open') -Wait -PassThru
+          if($p.ExitCode -ne 0){ throw "oneclick exit $($p.ExitCode)" }
+          $o=Get-ChildItem 'out\*.hwpx' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if($null -eq $o){ throw 'HWPX not created' }
+          python -m zipfile -t $o.FullName
+          if($LASTEXITCODE -ne 0){ throw 'HWPX ZIP check failed' }
+          Set-Content 'check.py' -Encoding utf8 -Value @'
+          import sys,zipfile,re,xml.etree.ElementTree as E
+          p=sys.argv[1]
+          with zipfile.ZipFile(p) as z:
+              sec=z.read('Contents/section0.xml')
+              E.fromstring(sec)
+              prv=z.read('Preview/PrvText.txt').decode('utf-8',errors='replace') if 'Preview/PrvText.txt' in z.namelist() else ''
+          clean=[x.strip() for x in prv.replace('\r','').split('\n') if x.strip()]
+          print(clean[:10])
+          joined='\n'.join(clean)
+          assert '[정답]' in joined and '30번' in joined,joined[:500]
+          ai=joined.find('[정답]'); vi=joined.find('30번',ai); hi=joined.find('[해설]',vi)
+          assert ai>=0 and vi>ai and hi>vi,(ai,vi,hi,joined[:500])
+          assert joined.count('[정답]')==1,joined[:500]
+          assert joined.count('[해설]')==1,joined[:500]
+          print('FINAL ANSWER-FIRST HWPX OK')
+          '@
+          python check.py $o.FullName
+          if($LASTEXITCODE -ne 0){ throw 'answer-first HWPX regression failed' }
+          Copy-Item $o.FullName 'out/GPT_HWPX_정답맨앞_테스트.hwpx' -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_TikZ_OneClick_AnswerFirst_Windows
+          path: |
+            dist/GPT_HWPX_원클릭_수식_TikZ_정답맨앞.exe
+            out/GPT_HWPX_정답맨앞_테스트.hwpx
+          if-no-files-found: error
+          retention-days: 7
