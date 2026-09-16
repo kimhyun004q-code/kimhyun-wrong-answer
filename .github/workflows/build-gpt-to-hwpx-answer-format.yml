@@ -1,0 +1,238 @@
+name: Build GPT HWPX Answer First One Click
+
+on:
+  push:
+    branches: [gpt-to-hwpx-build]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Reconstruct converter
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path 'conv' | Out-Null
+          $src64=''
+          Get-ChildItem 'gpt_to_hwpx_build/v3gz_*.b64' | Sort-Object Name | ForEach-Object { $src64 += Get-Content $_.FullName -Raw }
+          Set-Content 'conv/source.py.gz.b64' $src64 -Encoding ascii -NoNewline
+          python -c "import base64,gzip,pathlib; p=pathlib.Path('conv/source.py.gz.b64'); pathlib.Path('conv/converter.py').write_bytes(gzip.decompress(base64.b64decode(p.read_text())))"
+          Set-Content 'conv/patch.py' -Encoding utf8 -Value @'
+          from pathlib import Path
+          p=Path('conv/converter.py')
+          s=p.read_text(encoding='utf-8')
+          a="lambda cmd,a: 'box {'+latex_to_hwp(a[0])+'}')"
+          b="lambda cmd,a: latex_to_hwp(a[0]))"
+          if a in s:s=s.replace(a,b,1)
+          marker="        fm=re.match(r'^\\s*```\\s*([A-Za-z0-9_+-]*)\\s*$', line)"
+          if marker in s:
+              ins=(
+                  "        stripped=line.strip()\n\n"
+                  "        if stripped in ('$$', r'\\\\['):\n"
+                  "            closer = '$$' if stripped == '$$' else r'\\\\]'\n"
+                  "            content=[]; i+=1\n"
+                  "            while i<len(lines) and lines[i].strip()!=closer:\n"
+                  "                content.append(lines[i]); i+=1\n"
+                  "            if i<len(lines) and lines[i].strip()==closer: i+=1\n"
+                  "            raw='\\n'.join(content).strip()\n"
+                  "            if raw: blocks.append(('display_math',raw))\n"
+                  "            continue\n\n"
+              )
+              s=s.replace(marker,ins+marker,1)
+          p.write_text(s,encoding='utf-8')
+          '@
+          python conv/patch.py
+          $tpl=''
+          Get-ChildItem 'gpt_to_hwpx_build/template_*.b64' | Sort-Object Name | ForEach-Object { $tpl += Get-Content $_.FullName -Raw }
+          [IO.File]::WriteAllBytes('conv/direct_hwpx_template.hwpx',[Convert]::FromBase64String($tpl))
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pyinstaller
+
+      - name: Build converter EXE
+        shell: pwsh
+        run: |
+          $tpl=(Resolve-Path 'conv/direct_hwpx_template.hwpx').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_to_HWPX_core --distpath dist_core --workpath build_core --add-data "$tpl;." conv/converter.py
+
+      - name: Create answer-first launcher
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path app | Out-Null
+          Set-Content 'app/launcher.py' -Encoding utf8 -Value @'
+          import ctypes,os,re,subprocess,sys,tempfile,time,winreg,zipfile
+          from datetime import datetime
+          from pathlib import Path
+
+          CF_UNICODETEXT=13; CREATE_NO_WINDOW=0x08000000
+          u=ctypes.windll.user32; k=ctypes.windll.kernel32
+          u.OpenClipboard.argtypes=[ctypes.c_void_p];u.OpenClipboard.restype=ctypes.c_bool
+          u.CloseClipboard.argtypes=[];u.CloseClipboard.restype=ctypes.c_bool
+          u.GetClipboardData.argtypes=[ctypes.c_uint];u.GetClipboardData.restype=ctypes.c_void_p
+          k.GlobalLock.argtypes=[ctypes.c_void_p];k.GlobalLock.restype=ctypes.c_void_p
+          k.GlobalUnlock.argtypes=[ctypes.c_void_p];k.GlobalUnlock.restype=ctypes.c_bool
+
+          def msg(t):u.MessageBoxW(None,t,'GPT → HWPX',0x10)
+          def clip():
+              for _ in range(10):
+                  if u.OpenClipboard(None):
+                      try:
+                          h=u.GetClipboardData(CF_UNICODETEXT)
+                          if not h:return ''
+                          p=k.GlobalLock(h)
+                          if not p:return ''
+                          try:return ctypes.wstring_at(p)
+                          finally:k.GlobalUnlock(h)
+                      finally:u.CloseClipboard()
+                  time.sleep(.08)
+              return ''
+          def desktop():
+              try:
+                  q=winreg.OpenKey(winreg.HKEY_CURRENT_USER,r'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders')
+                  v,_=winreg.QueryValueEx(q,'Desktop');winreg.CloseKey(q);return Path(os.path.expandvars(v))
+              except:return Path.home()/'Desktop'
+          def resource(n):return Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/n
+          def outname(folder):
+              s=datetime.now().strftime('%Y%m%d_%H%M%S');return folder/f'GPT해설_{s}.hwpx'
+
+          def unbox(x):
+              x=x.strip().strip('`').strip()
+              m=re.fullmatch(r'\\boxed\s*\{(.*)\}',x,re.S)
+              return m.group(1).strip() if m else x
+
+          def find_answer(text):
+              # Prefer explicit boxed answer near the beginning.
+              m=re.search(r'\\boxed\s*\{([^{}]+)\}',text[:1500],re.S)
+              if m:return m.group(1).strip()
+              # Korean answer sentence, e.g. 정답은 ③입니다 / 정답: 55
+              m=re.search(r'(?:정답은|정답\s*[:：])\s*`?([^`\n]+?)`?(?:\s*(?:가지)?입니다\.?|\n|$)',text[:1200])
+              if m:
+                  a=m.group(1).strip()
+                  a=re.sub(r'\s*(?:가지)$','',a).strip()
+                  return unbox(a)
+              return ''
+
+          def answer_display(a):
+              a=unbox(a)
+              if not a:return ''
+              # Keep LaTeX answers as inline math for the converter.
+              if '\\' in a or any(ch in a for ch in '^_{}'):
+                  return f'`{a}`'
+              return a
+
+          def normalize_text(text):
+              text=text.replace('\r\n','\n').replace('\r','\n').strip()
+              if re.match(r'^\s*\[정답\]',text):
+                  if '[해설]' not in text:
+                      parts=text.split('\n',1)
+                      return parts[0]+'\n\n[해설]\n'+(parts[1] if len(parts)>1 else '')
+                  return text
+              ans=find_answer(text)
+              body=text
+              # Remove a leading natural-language answer sentence.
+              body=re.sub(r'^\s*정답은\s+.*?(?:입니다\.?|입니다\!)(?:\s*\n+|\s*)','',body,count=1,flags=re.S)
+              body=re.sub(r'^\s*정답\s*[:：].*?\n+','',body,count=1)
+              # Remove a trailing standalone boxed-answer block to avoid duplication.
+              body=re.sub(r'\n*```math\s*\n\s*\\boxed\s*\{[^{}]+\}\s*\n```\s*$','',body,flags=re.S)
+              body=re.sub(r'\n*\$\$\s*\n?\s*\\boxed\s*\{[^{}]+\}\s*\n?\$\$\s*$','',body,flags=re.S)
+              body=body.strip()
+              head='[정답]'+((' '+answer_display(ans)) if ans else '')
+              return head+'\n\n[해설]\n'+body
+
+          def clean_section(xml_text):
+              def clean_script(m):
+                  body=re.sub(r'(?i)(?:LEFT|RIGHT)\s*','',m.group(2))
+                  return m.group(1)+body+m.group(3)
+              xml_text=re.sub(r'(<hp:script>)(.*?)(</hp:script>)',clean_script,xml_text,flags=re.S)
+              spacer=re.compile(r'<hp:p\b[^>]*>\s*<hp:run\b[^>]*>\s*(?:<hp:t\b[^>]*/>|<hp:t\b[^>]*>\s*</hp:t>)\s*</hp:run>\s*</hp:p>',re.S)
+              return spacer.sub('',xml_text)
+          def postprocess(path):
+              with zipfile.ZipFile(path,'r') as zin:items=[(i,zin.read(i.filename)) for i in zin.infolist()]
+              tmp=path.with_suffix('.tmp.hwpx')
+              with zipfile.ZipFile(tmp,'w') as zout:
+                  for info,data in items:
+                      if info.filename.startswith('Contents/section') and info.filename.endswith('.xml'):
+                          data=clean_section(data.decode('utf-8')).encode('utf-8')
+                      zout.writestr(info,data)
+              os.replace(tmp,path)
+          def convert(text,out):
+              exe=resource('GPT_to_HWPX_core.exe')
+              with tempfile.TemporaryDirectory(prefix='gpt_hwpx_') as td:
+                  f=Path(td)/'clipboard.md';f.write_text(normalize_text(text),encoding='utf-8')
+                  si=subprocess.STARTUPINFO();si.dwFlags|=subprocess.STARTF_USESHOWWINDOW
+                  r=subprocess.run([str(exe),'--cli',str(f),str(out)],startupinfo=si,creationflags=CREATE_NO_WINDOW,timeout=120)
+                  if r.returncode or not out.exists():raise RuntimeError('HWPX 변환에 실패했습니다.')
+              postprocess(out)
+          def main():
+              a=sys.argv[1:];test=None;od=None;noopen=False;i=0
+              while i<len(a):
+                  if a[i]=='--test-input' and i+1<len(a):test=Path(a[i+1]);i+=2;continue
+                  if a[i]=='--output-dir' and i+1<len(a):od=Path(a[i+1]);i+=2;continue
+                  if a[i]=='--no-open':noopen=True;i+=1;continue
+                  i+=1
+              try:
+                  text=test.read_text(encoding='utf-8-sig') if test else clip()
+                  if not text.strip():msg('ChatGPT 답변을 먼저 복사(Ctrl+C)한 뒤 다시 실행해주세요.');return 2
+                  folder=od if od else desktop()/'GPT_HWPX';folder.mkdir(parents=True,exist_ok=True)
+                  out=outname(folder);convert(text,out)
+                  if not noopen:os.startfile(str(out))
+                  return 0
+              except Exception as e:msg(str(e));return 1
+          if __name__=='__main__':raise SystemExit(main())
+          '@
+
+          Set-Content 'app/sample.md' -Encoding utf8 -Value @'
+          정답은 `\boxed{55}`가지입니다.
+
+          흰 공끼리, 검은 공끼리는 서로 구별하지 않으므로 전체 공의 개수를 먼저 정리합니다.
+
+          $$
+          a+b+c=8
+          $$
+
+          따라서 계산하면 됩니다.
+
+          $$
+          \boxed{55}
+          $$
+          '@
+
+          Set-Content 'app/check.py' -Encoding utf8 -Value @'
+          import sys,zipfile,xml.etree.ElementTree as E
+          ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}
+          with zipfile.ZipFile(sys.argv[1]) as z:root=E.fromstring(z.read('Contents/section0.xml'))
+          txt=''.join((x.text or '') for x in root.findall('.//hp:t',ns))
+          assert txt.startswith('[정답] 55'),repr(txt[:100])
+          assert '[해설]' in txt[:120],repr(txt[:150])
+          assert '정답은' not in txt[:150],repr(txt[:150])
+          print('ANSWER FIRST OK',repr(txt[:120]))
+          '@
+
+      - name: Build one-click EXE
+        shell: pwsh
+        run: |
+          $core=(Resolve-Path 'dist_core/GPT_to_HWPX_core.exe').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_HWPX_원클릭_정답해설 --distpath dist_app --workpath build_app --add-binary "$core;." app/launcher.py
+
+      - name: End-to-end test
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $p=Start-Process '.\dist_app\GPT_HWPX_원클릭_정답해설.exe' -ArgumentList @('--test-input','app/sample.md','--output-dir','out','--no-open') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "app exit $($p.ExitCode)"}
+          $o=Get-ChildItem out\*.hwpx|Select-Object -First 1
+          python app/check.py $o.FullName
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_AnswerFirst_Windows
+          path: |
+            dist_app/GPT_HWPX_원클릭_정답해설.exe
+            out/*.hwpx
+          if-no-files-found: error
+          retention-days: 7
