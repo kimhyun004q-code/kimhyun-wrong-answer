@@ -106,10 +106,8 @@ jobs:
               return m.group(1).strip() if m else x
 
           def find_answer(text):
-              # Prefer explicit boxed answer near the beginning.
               m=re.search(r'\\boxed\s*\{([^{}]+)\}',text[:1500],re.S)
               if m:return m.group(1).strip()
-              # Korean answer sentence, e.g. 정답은 ③입니다 / 정답: 55
               m=re.search(r'(?:정답은|정답\s*[:：])\s*`?([^`\n]+?)`?(?:\s*(?:가지)?입니다\.?|\n|$)',text[:1200])
               if m:
                   a=m.group(1).strip()
@@ -120,7 +118,6 @@ jobs:
           def answer_display(a):
               a=unbox(a)
               if not a:return ''
-              # Keep LaTeX answers as inline math for the converter.
               if '\\' in a or any(ch in a for ch in '^_{}'):
                   return f'`{a}`'
               return a
@@ -134,10 +131,8 @@ jobs:
                   return text
               ans=find_answer(text)
               body=text
-              # Remove a leading natural-language answer sentence.
               body=re.sub(r'^\s*정답은\s+.*?(?:입니다\.?|입니다\!)(?:\s*\n+|\s*)','',body,count=1,flags=re.S)
               body=re.sub(r'^\s*정답\s*[:：].*?\n+','',body,count=1)
-              # Remove a trailing standalone boxed-answer block to avoid duplication.
               body=re.sub(r'\n*```math\s*\n\s*\\boxed\s*\{[^{}]+\}\s*\n```\s*$','',body,flags=re.S)
               body=re.sub(r'\n*\$\$\s*\n?\s*\\boxed\s*\{[^{}]+\}\s*\n?\$\$\s*$','',body,flags=re.S)
               body=body.strip()
@@ -210,7 +205,7 @@ jobs:
           assert txt.startswith('[정답] 55'),repr(txt[:100])
           assert '[해설]' in txt[:120],repr(txt[:150])
           assert '정답은' not in txt[:150],repr(txt[:150])
-          print('ANSWER FIRST OK',repr(txt[:120]))
+          print('ANSWER FIRST OK')
           '@
 
       - name: Build one-click EXE
