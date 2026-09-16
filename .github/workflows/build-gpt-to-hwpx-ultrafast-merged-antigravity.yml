@@ -1,0 +1,221 @@
+name: Build GPT HWPX UltraFast Merged Antigravity
+
+on:
+  push:
+    branches: [gpt-to-hwpx-build]
+    paths: ['.github/workflows/build-gpt-to-hwpx-ultrafast-merged-antigravity.yml']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Restore ultrafast sources and template
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path app | Out-Null
+          python -c "import base64,gzip,pathlib; p=pathlib.Path; p('app/ultrafast_app.py').write_bytes(gzip.decompress(base64.b64decode(p('gpt_hwpx_ultrafast_fixed/app.gz.b64').read_bytes()))); p('app/ultrafast_core.py').write_bytes(gzip.decompress(base64.b64decode(p('gpt_hwpx_ultrafast_fixed/core.gz.b64').read_bytes()))); p('app/ultrafast_tikz.py').write_bytes(gzip.decompress(base64.b64decode(p('gpt_hwpx_ultrafast_fixed/tikz.gz.b64').read_bytes())))"
+          python -c "import base64,pathlib; p=pathlib.Path; parts=sorted(p('gpt_to_hwpx_build').glob('template_*.b64')); p('app/direct_hwpx_template.hwpx').write_bytes(base64.b64decode(''.join(x.read_text().strip() for x in parts)))"
+
+      - name: Apply merged math fixes
+        shell: pwsh
+        run: |
+          Set-Content app/patch_all.py -Encoding utf8 -Value @'
+          from pathlib import Path
+          import re
+
+          # --- app: 64-bit clipboard + objective answer number only ---
+          p=Path('app/ultrafast_app.py')
+          s=p.read_text(encoding='utf-8')
+          needle="u=ctypes.windll.user32; k=ctypes.windll.kernel32\n"
+          patch="""u=ctypes.windll.user32; k=ctypes.windll.kernel32
+              u.OpenClipboard.argtypes=[ctypes.c_void_p]; u.OpenClipboard.restype=ctypes.c_bool
+              u.CloseClipboard.argtypes=[]; u.CloseClipboard.restype=ctypes.c_bool
+              u.GetClipboardData.argtypes=[ctypes.c_uint]; u.GetClipboardData.restype=ctypes.c_void_p
+              k.GlobalLock.argtypes=[ctypes.c_void_p]; k.GlobalLock.restype=ctypes.c_void_p
+              k.GlobalUnlock.argtypes=[ctypes.c_void_p]; k.GlobalUnlock.restype=ctypes.c_bool
+          """
+          if 'GetClipboardData.restype=ctypes.c_void_p' not in s:
+              if needle not in s: raise SystemExit('clipboard anchor not found')
+              s=s.replace(needle,patch,1)
+          ans_anchor="    if not answer:answer='정답 확인 필요'\n"
+          ans_fix="""    # 객관식 정답은 값/설명 없이 선택 번호만 남긴다.
+              circled=re.search(r'[①②③④⑤]', answer)
+              if circled:
+                  answer=circled.group(0)
+          """
+          if '객관식 정답은 값/설명 없이' not in s:
+              if ans_anchor not in s: raise SystemExit('answer anchor not found')
+              s=s.replace(ans_anchor,ans_fix+ans_anchor,1)
+          p.write_text(s,encoding='utf-8')
+
+          # --- core ---
+          p=Path('app/ultrafast_core.py')
+          s=p.read_text(encoding='utf-8')
+
+          # Geometry labels: points/segments/lines/triangles/planes are upright Roman.
+          a=s.index('def normalize_geometry_text(text: str) -> str:')
+          b=s.index('\ndef romanize_math_labels',a)
+          new=r'''def normalize_geometry_text(text: str) -> str:
+              text=text.replace('⊥', r'\\perp').replace('∥', r'\\parallel')
+              text=re.sub(r'∠\s*([A-Z]{1,6})', lambda m:r'\\angle '+m.group(1), text)
+              text=re.sub(r'\^\s*\{\s*\\(?:circ|degree)\s*\}', r'^{circ}', text)
+              text=re.sub(r'\^\s*\\(?:circ|degree)\b', r'^{circ}', text)
+              nouns=r'(점|삼각형|사각형|오각형|육각형|선분|직선|반직선|평면|원)'
+              text=re.sub(nouns+r'\s+\$\s*([A-Z]{1,6})\s*\$', lambda m:m.group(1)+' $\\mathrm{'+m.group(2)+'}$', text)
+              text=re.sub(nouns+r'\s+\\\(\s*([A-Z]{1,6})\s*\\\)', lambda m:m.group(1)+r' \(' + r'\\mathrm{'+m.group(2)+'}' + r'\)', text)
+              text=re.sub(nouns+r'\s+`\s*([A-Z]{1,6})\s*`', lambda m:m.group(1)+' `\\mathrm{'+m.group(2)+'}`', text)
+              text=re.sub(nouns+r'\s+\[\[INLINE_EQ\]\]\s*([A-Z]{1,6})\s*\[\[/INLINE_EQ\]\]', lambda m:m.group(1)+' [[INLINE_EQ]]\\mathrm{'+m.group(2)+'}[[/INLINE_EQ]]', text)
+              text=re.sub(nouns+r'\s+([A-Z]{1,6})(?![A-Za-z0-9])', lambda m:m.group(1)+' `\\mathrm{'+m.group(2)+'}`', text)
+              return text
+          '''
+          s=s[:a]+new+s[b:]
+
+          # Equality/inequality relation spacing.
+          rel_anchor="    s = s.replace('&nbsp;', ' ')\n"
+          rel_add=r'''    s = s.replace('&lt;', '<').replace('&gt;', '>').replace('＜', '<').replace('＞', '>')
+              s = s.replace('≤', '@@LEQ@@').replace('≥', '@@GEQ@@').replace('≠', '@@NEQ@@')
+              s = re.sub(r'\\(?:leqslant|leq|le)\b', '@@LEQ@@', s)
+              s = re.sub(r'\\(?:geqslant|geq|ge)\b', '@@GEQ@@', s)
+              s = re.sub(r'\\(?:neq|ne)\b', '@@NEQ@@', s)
+              s = re.sub(r'\\(?:lt|less)\b', '@@LT@@', s)
+              s = re.sub(r'\\(?:gt|greater)\b', '@@GT@@', s)
+              s = re.sub(r'(?<![<>=!])<=', '@@LEQ@@', s)
+              s = re.sub(r'(?<![<>=!])>=', '@@GEQ@@', s)
+              s = re.sub(r'!=', '@@NEQ@@', s)
+              s = re.sub(r'\s*<\s*', '@@LT@@', s)
+              s = re.sub(r'\s*>\s*', '@@GT@@', s)
+              s = re.sub(r'\s*=\s*', '@@EQ@@', s)
+              for key,val in (('@@LEQ@@',' ~LEQ~ '),('@@GEQ@@',' ~GEQ~ '),('@@NEQ@@',' ~neq~ '),('@@LT@@',' ~<~ '),('@@GT@@',' ~>~ '),('@@EQ@@',' ~=~ ')):
+                  s=s.replace(key,val)
+          '''
+          if rel_add not in s:
+              if rel_anchor not in s: raise SystemExit('relation anchor not found')
+              s=s.replace(rel_anchor,rel_anchor+rel_add,1)
+          s=s.replace("        r'\\geq':'>=', r'\\ge':'>=', r'\\leq':'<=', r'\\le':'<=', r'\\neq':'!=', r'\\ne':'!=', r'\\approx':'APPROX',",
+                      "        r'\\geq':'~GEQ~', r'\\ge':'~GEQ~', r'\\leq':'~LEQ~', r'\\le':'~LEQ~', r'\\neq':'~neq~', r'\\ne':'~neq~', r'\\approx':'APPROX',")
+          s=s.replace("        '≤':'<=','≥':'>=','≠':'!=','→':'rarrow','⇒':'RARROW','⇔':'LRARROW','↔':'LRARROW',",
+                      "        '≤':'~LEQ~','≥':'~GEQ~','≠':'~neq~','→':'rarrow','⇒':'RARROW','⇔':'LRARROW','↔':'LRARROW',")
+
+          # Hybrid layer: keep current engine, absorb proven Antigravity HWP math fixes.
+          if 'def _latex_to_hwp_base' not in s:
+              s=s.replace('def latex_to_hwp(expr: str) -> str:', 'def _latex_to_hwp_base(expr: str) -> str:',1)
+              marker='\nINLINE_TOKEN_RE = re.compile('
+              wrapper="""
+          def _antigravity_preprocess(expr: str) -> str:
+              e=expr
+              e=re.sub(r\"(?<=[A-Za-z0-9)\\}])'''(?!')\", ' prime prime prime ', e)
+              e=re.sub(r\"(?<=[A-Za-z0-9)\\}])''(?!')\", ' prime prime ', e)
+              e=re.sub(r\"(?<=[A-Za-z0-9)\\}])'(?!')\", ' prime ', e)
+              e=re.sub(r'\\\\prime\\s*\\\\prime\\s*\\\\prime', ' prime prime prime ', e)
+              e=re.sub(r'\\\\prime\\s*\\\\prime', ' prime prime ', e)
+              e=re.sub(r'\\\\prime', ' prime ', e)
+              e=re.sub(r'\\\\binom\\{([^{}]+)\\}\\{([^{}]+)\\}', r'{}_{\\1}\\\\mathrm{C}_{\\2}', e)
+              def _script_frac(m):
+                  op=m.group(1); inner=m.group(2).strip()
+                  fm=re.fullmatch(r'([A-Za-z0-9]+)\\s*/\\s*([A-Za-z0-9]+)',inner)
+                  return op+'{\\\\frac{'+fm.group(1)+'}{'+fm.group(2)+'}}' if fm else m.group(0)
+              e=re.sub(r'([_^])\\{([^{}]+)\\}', _script_frac, e)
+              e=re.sub(r'\\\\sqrt\\s*([A-Za-z0-9])', r'\\\\sqrt{\\1}', e)
+              for cmd in ('max','min','gcd','det','deg','exp'):
+                  e=re.sub(r'\\\\'+cmd+r'\\b', cmd, e)
+              e=re.sub(r'\\\\(?:bmod|pmod)\\b',' mod ',e)
+              e=re.sub(r'\\\\mid\\b',' | ',e)
+              return e
+
+          def _antigravity_postprocess(s: str) -> str:
+              s=re.sub(r'(?<=[0-9A-Za-z}\\)])(?=(?:sqrt|root)\\b)', ' ', s)
+              s=re.sub(r'\\bsqrt\\s*\\{([^{}]+)\\}\\s*\\^\\{([^{}]+)\\}', r'{sqrt {\\1}}^{\\2}', s)
+              s=re.sub(r'\\b(bar|vec|hat|tilde)\\s*\\{([^{}]+)\\}\\s*\\^\\{([^{}]+)\\}', r'{\\1 {\\2}}^{\\3}', s)
+              s=re.sub(r'\\{\\}_\\{([^{}]+)\\}\\s*rm\\s+C\\s+it\\s*_\\{([^{}]+)\\}', r'{}_{\\1} rm C _{\\2}', s)
+              s=re.sub(r'(\\^\\{[^{}]+\\}|_\\{[^{}]+\\})\\s*([+\\-=])\\s*', r'\\1 \\2 ', s)
+              s=re.sub(r'\\s+',' ',s).strip()
+              return s
+
+          def latex_to_hwp(expr: str) -> str:
+              return _antigravity_postprocess(_latex_to_hwp_base(_antigravity_preprocess(expr)))
+          """
+              if marker not in s: raise SystemExit('wrapper marker not found')
+              s=s.replace(marker,wrapper+marker,1)
+
+          p.write_text(s,encoding='utf-8')
+          '@
+          python app/patch_all.py
+          python -m py_compile app/ultrafast_app.py app/ultrafast_core.py app/ultrafast_tikz.py
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pyinstaller pymupdf
+
+      - name: Merged math regression
+        shell: pwsh
+        run: |
+          Set-Content app/regression.py -Encoding utf8 -Value @'
+          import sys, pathlib
+          sys.path.insert(0,str(pathlib.Path(__file__).parent))
+          import ultrafast_core as c
+          tests={
+            r'(10\sqrt{3})^2':'(10 sqrt {3})^{2}',
+            r'\sqrt{3}^2':'{sqrt {3}}^{2}',
+            r"f'(x)":'f prime (x)',
+            r'\binom{n}{r}':'{}_{n} rm C _{r}',
+            r'2^{1/2}':'2^{{1} over {2}}',
+            r'n\sqrt{n}':'n sqrt {n}',
+            r'-2\le x\le \frac32':'~LEQ~',
+            r'17^2=289<300=(10\sqrt{3})^2<324=18^2':'10 sqrt {3}',
+          }
+          for src,want in tests.items():
+              got=c.latex_to_hwp(src)
+              print(src,'=>',got)
+              assert want in got,(src,got,want)
+          assert '10sqrt' not in c.latex_to_hwp(r'(10\sqrt{3})^2')
+          print('MERGED MATH REGRESSION OK')
+          '@
+          python app/regression.py
+          Set-Content app/sample.txt -Encoding utf8 -Value @'
+          [정답] ① -4
+          [해설]
+          여기서 $17^2=289<300=(10\sqrt{3})^2<324=18^2$ 이므로 $17<10\sqrt{3}<18$이다.
+          점 $A$와 점 $B$를 잇는 선분 $AB$를 생각한다.
+          또한 $f'(x)$, $2^{1/2}$, $\binom{n}{r}$를 확인한다.
+          '@
+          New-Item -ItemType Directory -Force -Path outsrc | Out-Null
+          Push-Location app
+          python ultrafast_app.py --test-input sample.txt --output-dir ../outsrc --no-open --validate
+          Pop-Location
+          python -c "import zipfile,xml.etree.ElementTree as E,pathlib; p=next(pathlib.Path('outsrc').glob('*.hwpx')); z=zipfile.ZipFile(p); r=E.fromstring(z.read('Contents/section0.xml')); ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}; scripts='\\n'.join((x.text or '') for x in r.findall('.//hp:script',ns)); text='\\n'.join((x.text or '') for x in r.findall('.//hp:t',ns)); assert '[정답] ①' in text,text; assert '① -4' not in text,text; assert '(10 sqrt {3})^{2}' in scripts,scripts; assert 'rm A it' in scripts and 'rm AB it' in scripts,scripts; assert '{}_{n} rm C _{r}' in scripts,scripts; print('HWPX MERGED E2E OK')"
+
+      - name: Build Windows EXEs
+        shell: pwsh
+        run: |
+          $tpl=(Resolve-Path 'app/direct_hwpx_template.hwpx').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_HWPX_초고속_통합수식엔진 --distpath dist_onefile --workpath build_onefile --add-data "$tpl;." app/ultrafast_app.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name GPT_HWPX_초고속_FAST_통합수식엔진 --distpath dist_fast --workpath build_fast --add-data "$tpl;." app/ultrafast_app.py
+
+      - name: EXE smoke test
+        shell: pwsh
+        run: |
+          Set-Clipboard -Value '[정답] ① -4`n[해설]`n$17^2=289<300=(10\sqrt{3})^2<324=18^2$'
+          $p=Start-Process '.\dist_fast\GPT_HWPX_초고속_FAST_통합수식엔진\GPT_HWPX_초고속_FAST_통합수식엔진.exe' -ArgumentList @('--no-open') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "FAST smoke failed: $($p.ExitCode)"}
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $p=Start-Process '.\dist_onefile\GPT_HWPX_초고속_통합수식엔진.exe' -ArgumentList @('--test-input','app/sample.txt','--output-dir','out','--no-open','--validate') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "onefile exit $($p.ExitCode)"}
+          $o=Get-ChildItem 'out\*.hwpx'|Select-Object -First 1
+          Copy-Item $o.FullName 'out/GPT_HWPX_통합수식엔진_테스트.hwpx' -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_UltraFast_Merged_Antigravity_Windows
+          path: |
+            dist_onefile/GPT_HWPX_초고속_통합수식엔진.exe
+            dist_fast/GPT_HWPX_초고속_FAST_통합수식엔진/**
+            out/GPT_HWPX_통합수식엔진_테스트.hwpx
+          if-no-files-found: error
+          retention-days: 7
