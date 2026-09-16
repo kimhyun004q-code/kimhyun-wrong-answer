@@ -1,0 +1,76 @@
+name: Build GPT to HWPX Windows EXE
+
+on:
+  push:
+    branches:
+      - gpt-to-hwpx-build
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Reconstruct source and template
+        shell: pwsh
+        run: |
+          $src = ''
+          Get-ChildItem 'gpt_to_hwpx_build/source_*.b64' | Sort-Object Name | ForEach-Object { $src += Get-Content $_.FullName -Raw }
+          [IO.File]::WriteAllBytes('gpt_to_hwpx_build/gpt_to_hwpx.py', [Convert]::FromBase64String($src))
+
+          $tpl = ''
+          Get-ChildItem 'gpt_to_hwpx_build/template_*.b64' | Sort-Object Name | ForEach-Object { $tpl += Get-Content $_.FullName -Raw }
+          [IO.File]::WriteAllBytes('gpt_to_hwpx_build/direct_hwpx_template.hwpx', [Convert]::FromBase64String($tpl))
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pyinstaller
+
+      - name: Smoke test Python converter
+        shell: pwsh
+        run: |
+          Set-Content -Path 'gpt_to_hwpx_build/sample.txt' -Encoding utf8 -Value @'
+          [출제의도]
+          이차방정식의 근을 구한다.
+
+          [해설]
+          $x^2-5x+6=0$에서 $(x-2)(x-3)=0$이므로 $x=2,3$이다.
+          분수 확인: $\frac{1}{2}$
+          켤레/바 확인: $\overline{z}$
+
+          [정답]
+          $2,3$
+          '@
+          python gpt_to_hwpx_build/gpt_to_hwpx.py --cli gpt_to_hwpx_build/sample.txt gpt_to_hwpx_build/smoke.hwpx
+          if (!(Test-Path 'gpt_to_hwpx_build/smoke.hwpx')) { throw 'Python smoke test failed: HWPX not created' }
+          python -m zipfile -t gpt_to_hwpx_build/smoke.hwpx
+
+      - name: Build single EXE
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name GPT_to_HWPX `
+            --add-data 'gpt_to_hwpx_build/direct_hwpx_template.hwpx;.' `
+            gpt_to_hwpx_build/gpt_to_hwpx.py
+
+      - name: Smoke test EXE converter
+        shell: pwsh
+        run: |
+          & '.\dist\GPT_to_HWPX.exe' --cli 'gpt_to_hwpx_build/sample.txt' 'gpt_to_hwpx_build/smoke_exe.hwpx'
+          if (!(Test-Path 'gpt_to_hwpx_build/smoke_exe.hwpx')) { throw 'EXE smoke test failed: HWPX not created' }
+          python -m zipfile -t gpt_to_hwpx_build/smoke_exe.hwpx
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPT_to_HWPX_Windows
+          path: dist/GPT_to_HWPX.exe
+          if-no-files-found: error
+          retention-days: 7
