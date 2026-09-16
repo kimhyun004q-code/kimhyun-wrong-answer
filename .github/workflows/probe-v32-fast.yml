@@ -19,9 +19,18 @@ jobs:
       - name: Rebuild V32 source
         shell: pwsh
         run: |
-          $b64 = (Get-Content gpt_to_hwpx_build/v32gz_00.b64 -Raw) + (Get-Content gpt_to_hwpx_build/v32gz_01.b64 -Raw) + (Get-Content gpt_to_hwpx_build/v32gz_02.b64 -Raw) + (Get-Content gpt_to_hwpx_build/v32gz_03.b64 -Raw)
-          [IO.File]::WriteAllBytes('v32.py.gz',[Convert]::FromBase64String($b64))
-          python -c "import gzip;open('v32.py','wb').write(gzip.open('v32.py.gz','rb').read())"
+          Set-Content rebuild.py -Encoding utf8 -Value @'
+          import base64,gzip
+          parts=[]
+          for i in range(4):
+              s=open(f'gpt_to_hwpx_build/v32gz_{i:02d}.b64',encoding='utf-8-sig').read().strip()
+              parts.append(s)
+          blob=base64.b64decode(''.join(parts))
+          open('v32.py.gz','wb').write(blob)
+          open('v32.py','wb').write(gzip.decompress(blob))
+          print('rebuilt bytes',len(blob),len(gzip.decompress(blob)))
+          '@
+          python rebuild.py
       - name: Probe functions
         shell: pwsh
         run: |
