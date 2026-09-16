@@ -141,6 +141,24 @@ jobs:
           `B`가 가장 많이 받고 `A\ge2`이므로 전체 개수 분배가 위 8개로 제한됩니다. 각 분배에서 흰 공 4개의 배분만 세어 합하면 `\boxed{55}`입니다.
           '@
 
+          Set-Content -Path 'gpt_to_hwpx_v3/check_v3.py' -Encoding utf8 -Value @'
+          import sys, zipfile, xml.etree.ElementTree as E
+          path=sys.argv[1]
+          ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}
+          with zipfile.ZipFile(path) as z:
+              root=E.fromstring(z.read('Contents/section0.xml'))
+          scripts=[(x.text or '') for x in root.findall('.//hp:equation/hp:script',ns)]
+          assert len(scripts)>=20, scripts
+          assert not any('\\' in x for x in scripts), scripts
+          assert any('box {55}' in x for x in scripts), scripts
+          assert any(x.startswith('matrix{') for x in scripts), scripts
+          assert any('"경우의 수"' in x for x in scripts), scripts
+          assert any('0 <= x <= a' in x for x in scripts), scripts
+          bad=('begin{array}','end{array}','boxed','text{','\\ge','\\le','```')
+          assert not any(any(b in x for b in bad) for x in scripts), scripts
+          print('V3 exact-sample regression OK:',len(scripts))
+          '@
+
       - name: Smoke test Python V3 converter
         shell: pwsh
         run: |
@@ -148,7 +166,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Python V3 converter exited with $LASTEXITCODE" }
           python -m zipfile -t gpt_to_hwpx_v3/smoke.hwpx
           if ($LASTEXITCODE -ne 0) { throw 'Python V3 HWPX ZIP integrity check failed' }
-          python -c "import zipfile,xml.etree.ElementTree as E; ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}; z=zipfile.ZipFile('gpt_to_hwpx_v3/smoke.hwpx'); r=E.fromstring(z.read('Contents/section0.xml')); s=[(x.text or '') for x in r.findall('.//hp:equation/hp:script',ns)]; assert len(s)>=20, len(s); assert not any('\\' in x for x in s), s; assert any('box {55}' in x for x in s), s; assert any(x.startswith('matrix{') for x in s), s; assert any('\"경우의 수\"' in x for x in s), s; assert any('0 <= x <= a' in x for x in s), s; print('V3 exact-sample regression OK:',len(s))"
+          python gpt_to_hwpx_v3/check_v3.py gpt_to_hwpx_v3/smoke.hwpx
+          if ($LASTEXITCODE -ne 0) { throw 'Python V3 exact-sample regression failed' }
 
       - name: Build single V3 EXE
         shell: pwsh
@@ -168,7 +187,8 @@ jobs:
           if (!(Test-Path 'gpt_to_hwpx_v3/smoke_exe.hwpx')) { throw 'V3 EXE smoke test failed: HWPX not created' }
           python -m zipfile -t gpt_to_hwpx_v3/smoke_exe.hwpx
           if ($LASTEXITCODE -ne 0) { throw 'V3 EXE HWPX ZIP integrity check failed' }
-          python -c "import zipfile,xml.etree.ElementTree as E; ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}; z=zipfile.ZipFile('gpt_to_hwpx_v3/smoke_exe.hwpx'); r=E.fromstring(z.read('Contents/section0.xml')); s=[(x.text or '') for x in r.findall('.//hp:equation/hp:script',ns)]; assert len(s)>=20; assert not any('\\' in x for x in s); assert any('box {55}' in x for x in s); assert any(x.startswith('matrix{') for x in s); print('V3 EXE exact-sample regression OK:',len(s))"
+          python gpt_to_hwpx_v3/check_v3.py gpt_to_hwpx_v3/smoke_exe.hwpx
+          if ($LASTEXITCODE -ne 0) { throw 'V3 EXE exact-sample regression failed' }
 
       - name: Upload Windows V3 EXE and sample
         uses: actions/upload-artifact@v4
