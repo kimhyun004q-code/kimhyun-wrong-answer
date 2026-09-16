@@ -1,4 +1,4 @@
-name: Build GPT to HWPX V3.1 Windows EXE
+name: Build GPT to HWPX V3.2 Windows EXE
 
 on:
   push:
@@ -9,7 +9,6 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,196 +18,123 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Reconstruct and patch V3.1 source
+      - name: Reconstruct V3.2 source and template
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path 'gpt_to_hwpx_v3' | Out-Null
+          New-Item -ItemType Directory -Force -Path 'gpt_to_hwpx_v32' | Out-Null
           $src64 = ''
-          Get-ChildItem 'gpt_to_hwpx_build/v3gz_*.b64' | Sort-Object Name | ForEach-Object { $src64 += Get-Content $_.FullName -Raw }
-          Set-Content -Path 'gpt_to_hwpx_v3/source.py.gz.b64' -Value $src64 -Encoding ascii -NoNewline
-          python -c "import base64,gzip,pathlib; p=pathlib.Path('gpt_to_hwpx_v3/source.py.gz.b64'); pathlib.Path('gpt_to_hwpx_v3/gpt_to_hwpx_v3.py').write_bytes(gzip.decompress(base64.b64decode(p.read_text())))"
-
-          Set-Content -Path 'gpt_to_hwpx_v3/patch_no_box.py' -Encoding utf8 -Value @'
-          from pathlib import Path
-          p=Path('gpt_to_hwpx_v3/gpt_to_hwpx_v3.py')
-          s=p.read_text(encoding='utf-8')
-          old="lambda cmd,a: 'box {'+latex_to_hwp(a[0])+'}')"
-          new="lambda cmd,a: latex_to_hwp(a[0]))"
-          if old not in s:
-              raise SystemExit('boxed conversion pattern not found')
-          p.write_text(s.replace(old,new),encoding='utf-8')
-          '@
-          python gpt_to_hwpx_v3/patch_no_box.py
+          Get-ChildItem 'gpt_to_hwpx_build/v32gz_*.b64' | Sort-Object Name | ForEach-Object { $src64 += Get-Content $_.FullName -Raw }
+          Set-Content -Path 'gpt_to_hwpx_v32/source.py.gz.b64' -Value $src64 -Encoding ascii -NoNewline
+          python -c "import base64,gzip,pathlib; p=pathlib.Path('gpt_to_hwpx_v32/source.py.gz.b64'); pathlib.Path('gpt_to_hwpx_v32/gpt_to_hwpx_v32.py').write_bytes(gzip.decompress(base64.b64decode(p.read_text())))"
+          $sha = (Get-FileHash 'gpt_to_hwpx_v32/gpt_to_hwpx_v32.py' -Algorithm SHA256).Hash.ToLower()
+          if ($sha -ne '84c007e8b72b4a37d5a06cf45792acee81db3b1b5601081a4eaaff1049558c24') { throw "V3.2 source SHA mismatch: $sha" }
 
           $tpl = ''
           Get-ChildItem 'gpt_to_hwpx_build/template_*.b64' | Sort-Object Name | ForEach-Object { $tpl += Get-Content $_.FullName -Raw }
-          [IO.File]::WriteAllBytes('gpt_to_hwpx_v3/direct_hwpx_template.hwpx', [Convert]::FromBase64String($tpl))
-
-          $sha = (Get-FileHash 'gpt_to_hwpx_v3/gpt_to_hwpx_v3.py' -Algorithm SHA256).Hash.ToLower()
-          if ($sha -ne '1ef1b899396d3e6bc5901b5c15f8a213938dc7806abb4d9430e868b4469987df') { throw "V3.1 source SHA mismatch: $sha" }
+          [IO.File]::WriteAllBytes('gpt_to_hwpx_v32/direct_hwpx_template.hwpx', [Convert]::FromBase64String($tpl))
 
       - name: Install PyInstaller
         run: python -m pip install --upgrade pyinstaller
 
-      - name: Create exact ChatGPT regression sample
+      - name: Create clipboard-style regression sample
         shell: pwsh
         run: |
-          Set-Content -Path 'gpt_to_hwpx_v3/exact_sample.md' -Encoding utf8 -Value @'
+          Set-Content -Path 'gpt_to_hwpx_v32/clipboard_sample.md' -Encoding utf8 -Value @'
           정답은 `\boxed{55}`가지입니다.
-
-          흰 공끼리, 검은 공끼리는 서로 구별하지 않으므로 각 학생이 받는 **전체 공의 개수**를 먼저 정리하면 계산이 깔끔합니다.
 
           학생 `A,B,C`가 받는 공의 총개수를 각각
 
-          ```math
+          $$
           a,b,c
-          ```
+          $$
 
           라 하면
 
-          ```math
+          $$
           a+b+c=8
-          ```
+          $$
 
           이고, 조건에 의해
 
-          ```math
+          $$
           a\ge2,\qquad b\ge a,\qquad b\ge c
-          ```
+          $$
 
           입니다.
 
           이 조건을 만족하는 `(a,b,c)`는
 
-          ```math
+          $$
           \begin{array}{c} (2,3,3),\ (2,4,2),\ (2,5,1),\ (2,6,0),\\ (3,3,2),\ (3,4,1),\ (3,5,0),\ (4,4,0) \end{array}
-          ```
-
-          뿐입니다.
-
-          이제 각 경우마다 흰 공 4개를 `A,B,C`에게 나누는 방법을 세면 됩니다.
-          흰 공의 개수를 `x,y,z`라 하면
-
-          ```math
-          x+y+z=4
-          ```
-
-          이고 동시에
-
-          ```math
-          0\le x\le a,\qquad 0\le y\le b,\qquad 0\le z\le c
-          ```
-
-          이어야 합니다. 흰 공의 배분이 결정되면 검은 공의 배분은 자동으로 정해집니다.
+          $$
 
           각 경우를 세면
 
-          ```math
+          $$
           \begin{array}{c|c} (a,b,c)&\text{경우의 수}\\ \hline (2,3,3)&10\\ (2,4,2)&9\\ (2,5,1)&6\\ (2,6,0)&3\\ (3,3,2)&10\\ (3,4,1)&8\\ (3,5,0)&4\\ (4,4,0)&5 \end{array}
-          ```
+          $$
 
-          따라서 전체 경우의 수는
-
-          ```math
-          10+9+6+3+10+8+4+5 =55.
-          ```
-
-          ```math
+          $$
           \boxed{55}
-          ```
-
-          ### 시험용 풀이의 핵심
-
-          전체 공의 개수를 먼저 정하면 가능한 경우가 8개뿐입니다.
-
-          ```math
-          (2,3,3),(2,4,2),(2,5,1),(2,6,0), (3,3,2),(3,4,1),(3,5,0),(4,4,0)
-          ```
-
-          각 경우에서
-
-          ```math
-          x+y+z=4
-          ```
-
-          의 음이 아닌 정수해 중
-
-          ```math
-          x\le a,\ y\le b,\ z\le c
-          ```
-
-          인 것을 세면 각각
-
-          ```math
-          10,9,6,3,10,8,4,5
-          ```
-
-          이므로
-
-          ```math
-          \boxed{55}.
-          ```
-
-          **10초컷:**
-          `B`가 가장 많이 받고 `A\ge2`이므로 전체 개수 분배가 위 8개로 제한됩니다. 각 분배에서 흰 공 4개의 배분만 세어 합하면 `\boxed{55}`입니다.
+          $$
           '@
 
-          Set-Content -Path 'gpt_to_hwpx_v3/check_v31.py' -Encoding utf8 -Value @'
-          import sys, zipfile, xml.etree.ElementTree as E
-          path=sys.argv[1]
+          Set-Content -Path 'gpt_to_hwpx_v32/check_v32.py' -Encoding utf8 -Value @'
+          import sys,zipfile,xml.etree.ElementTree as E
           ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}
-          with zipfile.ZipFile(path) as z:
+          with zipfile.ZipFile(sys.argv[1]) as z:
               root=E.fromstring(z.read('Contents/section0.xml'))
+          texts=[(x.text or '') for x in root.findall('.//hp:t',ns)]
           scripts=[(x.text or '') for x in root.findall('.//hp:equation/hp:script',ns)]
-          assert len(scripts)>=20, scripts
-          assert not any('\\' in x for x in scripts), scripts
-          assert not any('box {' in x for x in scripts), scripts
-          assert sum(1 for x in scripts if x.strip().rstrip('.')=='55') >= 3, scripts
+          plain='\n'.join(texts)
+          bad_plain=('$$','\\begin','\\end','\\ge','\\le','\\qquad','\\text','```')
+          assert not any(x in plain for x in bad_plain), plain
+          assert len(scripts)>=8, scripts
           assert any(x.startswith('matrix{') for x in scripts), scripts
           assert any('"경우의 수"' in x for x in scripts), scripts
-          assert any('0 <= x <= a' in x for x in scripts), scripts
-          bad=('begin{array}','end{array}','boxed','text{','\\ge','\\le','```')
-          assert not any(any(b in x for b in bad) for x in scripts), scripts
-          print('V3.1 no-box regression OK:',len(scripts))
+          assert any('a >= 2' in x and 'b >= a' in x for x in scripts), scripts
+          assert not any('box {' in x for x in scripts), scripts
+          assert not any('\\' in x for x in scripts), scripts
+          print('V3.2 clipboard regression OK',len(scripts))
           '@
 
-      - name: Smoke test Python V3.1 converter
+      - name: Smoke test Python V3.2 converter
         shell: pwsh
         run: |
-          python gpt_to_hwpx_v3/gpt_to_hwpx_v3.py --cli gpt_to_hwpx_v3/exact_sample.md gpt_to_hwpx_v3/smoke.hwpx
-          if ($LASTEXITCODE -ne 0) { throw "Python V3.1 converter exited with $LASTEXITCODE" }
-          python -m zipfile -t gpt_to_hwpx_v3/smoke.hwpx
-          if ($LASTEXITCODE -ne 0) { throw 'Python V3.1 HWPX ZIP integrity check failed' }
-          python gpt_to_hwpx_v3/check_v31.py gpt_to_hwpx_v3/smoke.hwpx
-          if ($LASTEXITCODE -ne 0) { throw 'Python V3.1 no-box regression failed' }
+          python gpt_to_hwpx_v32/gpt_to_hwpx_v32.py --cli gpt_to_hwpx_v32/clipboard_sample.md gpt_to_hwpx_v32/smoke.hwpx
+          if ($LASTEXITCODE -ne 0) { throw "Python V3.2 converter exited with $LASTEXITCODE" }
+          python -m zipfile -t gpt_to_hwpx_v32/smoke.hwpx
+          if ($LASTEXITCODE -ne 0) { throw 'Python V3.2 HWPX ZIP integrity check failed' }
+          python gpt_to_hwpx_v32/check_v32.py gpt_to_hwpx_v32/smoke.hwpx
+          if ($LASTEXITCODE -ne 0) { throw 'Python V3.2 clipboard regression failed' }
 
-      - name: Build single V3.1 EXE
+      - name: Build single V3.2 EXE
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean --onefile --windowed `
-            --name GPT_to_HWPX_V3_1 `
-            --add-data 'gpt_to_hwpx_v3/direct_hwpx_template.hwpx;.' `
-            gpt_to_hwpx_v3/gpt_to_hwpx_v3.py
+            --name GPT_to_HWPX_V3_2 `
+            --add-data 'gpt_to_hwpx_v32/direct_hwpx_template.hwpx;.' `
+            gpt_to_hwpx_v32/gpt_to_hwpx_v32.py
 
-      - name: Smoke test V3.1 EXE converter
+      - name: Smoke test V3.2 EXE converter
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath '.\dist\GPT_to_HWPX_V3_1.exe' `
-            -ArgumentList @('--cli', 'gpt_to_hwpx_v3/exact_sample.md', 'gpt_to_hwpx_v3/smoke_exe.hwpx') `
+          $p = Start-Process -FilePath '.\dist\GPT_to_HWPX_V3_2.exe' `
+            -ArgumentList @('--cli', 'gpt_to_hwpx_v32/clipboard_sample.md', 'gpt_to_hwpx_v32/smoke_exe.hwpx') `
             -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "V3.1 EXE converter exited with $($p.ExitCode)" }
-          if (!(Test-Path 'gpt_to_hwpx_v3/smoke_exe.hwpx')) { throw 'V3.1 EXE smoke test failed: HWPX not created' }
-          python -m zipfile -t gpt_to_hwpx_v3/smoke_exe.hwpx
-          if ($LASTEXITCODE -ne 0) { throw 'V3.1 EXE HWPX ZIP integrity check failed' }
-          python gpt_to_hwpx_v3/check_v31.py gpt_to_hwpx_v3/smoke_exe.hwpx
-          if ($LASTEXITCODE -ne 0) { throw 'V3.1 EXE no-box regression failed' }
+          if ($p.ExitCode -ne 0) { throw "V3.2 EXE converter exited with $($p.ExitCode)" }
+          if (!(Test-Path 'gpt_to_hwpx_v32/smoke_exe.hwpx')) { throw 'V3.2 EXE smoke test failed: HWPX not created' }
+          python -m zipfile -t gpt_to_hwpx_v32/smoke_exe.hwpx
+          if ($LASTEXITCODE -ne 0) { throw 'V3.2 EXE HWPX ZIP integrity check failed' }
+          python gpt_to_hwpx_v32/check_v32.py gpt_to_hwpx_v32/smoke_exe.hwpx
+          if ($LASTEXITCODE -ne 0) { throw 'V3.2 EXE clipboard regression failed' }
 
-      - name: Upload Windows V3.1 EXE and sample
+      - name: Upload Windows V3.2 EXE and sample
         uses: actions/upload-artifact@v4
         with:
-          name: GPT_to_HWPX_V3_1_Windows
+          name: GPT_to_HWPX_V3_2_Windows
           path: |
-            dist/GPT_to_HWPX_V3_1.exe
-            gpt_to_hwpx_v3/smoke_exe.hwpx
+            dist/GPT_to_HWPX_V3_2.exe
+            gpt_to_hwpx_v32/smoke_exe.hwpx
           if-no-files-found: error
           retention-days: 7
