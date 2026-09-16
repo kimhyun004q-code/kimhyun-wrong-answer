@@ -1,0 +1,228 @@
+name: Build GPT HWPX Geometry Symbols Fix
+
+on:
+  push:
+    branches: [gpt-to-hwpx-build]
+    paths:
+      - '.github/workflows/build-gpt-to-hwpx-geometry-symbols.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download verified geometry roman EXE
+        uses: actions/download-artifact@v4
+        with:
+          name: GPT_HWPX_GeometryRoman_Windows
+          path: prev
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 35075436343
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pyinstaller
+
+      - name: Create geometry symbols wrapper
+        shell: pwsh
+        run: |
+          $inner=(Get-ChildItem 'prev' -Recurse -Filter 'GPT_HWPX_원클릭_기하로마체.exe' | Select-Object -First 1).FullName
+          if(-not $inner){ throw 'previous geometry EXE not found' }
+          New-Item -ItemType Directory -Force -Path app | Out-Null
+          Copy-Item $inner 'app/GPT_HWPX_원클릭_기하로마체.exe' -Force
+
+          Set-Content 'app/wrapper.py' -Encoding utf8 -Value @'
+          import ctypes, os, re, subprocess, sys, tempfile, time
+          from pathlib import Path
+
+          CF_UNICODETEXT=13
+          GMEM_MOVEABLE=0x0002
+          CREATE_NO_WINDOW=0x08000000
+          u=ctypes.windll.user32
+          k=ctypes.windll.kernel32
+          u.OpenClipboard.argtypes=[ctypes.c_void_p];u.OpenClipboard.restype=ctypes.c_bool
+          u.CloseClipboard.argtypes=[];u.CloseClipboard.restype=ctypes.c_bool
+          u.EmptyClipboard.argtypes=[];u.EmptyClipboard.restype=ctypes.c_bool
+          u.GetClipboardData.argtypes=[ctypes.c_uint];u.GetClipboardData.restype=ctypes.c_void_p
+          u.SetClipboardData.argtypes=[ctypes.c_uint,ctypes.c_void_p];u.SetClipboardData.restype=ctypes.c_void_p
+          k.GlobalAlloc.argtypes=[ctypes.c_uint,ctypes.c_size_t];k.GlobalAlloc.restype=ctypes.c_void_p
+          k.GlobalLock.argtypes=[ctypes.c_void_p];k.GlobalLock.restype=ctypes.c_void_p
+          k.GlobalUnlock.argtypes=[ctypes.c_void_p];k.GlobalUnlock.restype=ctypes.c_bool
+
+          def msg(t):u.MessageBoxW(None,t,'GPT → HWPX',0x10)
+          def resource(n):return Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/n
+
+          def get_clipboard():
+              for _ in range(15):
+                  if u.OpenClipboard(None):
+                      try:
+                          h=u.GetClipboardData(CF_UNICODETEXT)
+                          if not h:return ''
+                          p=k.GlobalLock(h)
+                          if not p:return ''
+                          try:return ctypes.wstring_at(p)
+                          finally:k.GlobalUnlock(h)
+                      finally:u.CloseClipboard()
+                  time.sleep(.05)
+              return ''
+
+          def set_clipboard(text):
+              data=text.encode('utf-16-le')+b'\x00\x00'
+              if not u.OpenClipboard(None):raise RuntimeError('클립보드를 열 수 없습니다.')
+              try:
+                  u.EmptyClipboard()
+                  h=k.GlobalAlloc(GMEM_MOVEABLE,len(data))
+                  if not h:raise RuntimeError('클립보드 메모리 할당 실패')
+                  p=k.GlobalLock(h);ctypes.memmove(p,data,len(data));k.GlobalUnlock(h)
+                  if not u.SetClipboardData(CF_UNICODETEXT,h):raise RuntimeError('클립보드 쓰기 실패')
+              finally:u.CloseClipboard()
+
+          def normalize_geometry_symbols(text):
+              # Hancom equation commands are case-sensitive. Feed native-style tokens
+              # instead of letting the older converter turn them into PERP/PARALLEL text.
+              text=text.replace(r'\perp',' bot ')
+              text=text.replace('⊥',' bot ')
+              text=text.replace(r'\parallel',' parallel ')
+              text=text.replace('∥',' parallel ')
+
+              # Degree: avoid the generic script-scope fixer turning ^circ into ^{c}irc.
+              text=re.sub(r'\^\s*\{\s*\\circ\s*\}', '°', text)
+              text=re.sub(r'\^\s*\\circ\b', '°', text)
+              text=re.sub(r'\^\s*\{\s*\\degree\s*\}', '°', text)
+              text=re.sub(r'\^\s*\\degree\b', '°', text)
+              text=text.replace(r'\degree','°')
+
+              # Normalize common Unicode angle to Hancom's angle command if it appears in copied text.
+              text=re.sub(r'∠\s*([A-Z]{1,4})',lambda m:r'\angle '+m.group(1),text)
+
+              # Geometry prose contexts not always inside math: make labels explicit roman math.
+              nouns=r'(점|삼각형|사각형|오각형|육각형|선분|직선|반직선|평면|원)'
+              def repl(m):
+                  noun,label=m.group(1),m.group(2)
+                  # Do not touch if already immediately part of an inline math/backtick expression.
+                  return noun+' `\\mathrm{'+label+'}`'
+              text=re.sub(nouns+r'\s+([A-Z]{1,6})(?![A-Za-z0-9])',repl,text)
+              return text
+
+          def run_inner_with_file(text,args):
+              inner=resource('GPT_HWPX_원클릭_기하로마체.exe')
+              if not inner.exists():raise RuntimeError('내부 변환기를 찾지 못했습니다.')
+              with tempfile.TemporaryDirectory(prefix='gpt_geomsym_') as td:
+                  f=Path(td)/'normalized.md';f.write_text(normalize_geometry_symbols(text),encoding='utf-8')
+                  cmd=[str(inner),'--test-input',str(f)];cmd.extend(args)
+                  return subprocess.run(cmd,creationflags=CREATE_NO_WINDOW,timeout=180).returncode
+
+          def main():
+              a=sys.argv[1:];test=None;passthrough=[];i=0
+              while i<len(a):
+                  if a[i]=='--test-input' and i+1<len(a):test=Path(a[i+1]);i+=2;continue
+                  passthrough.append(a[i]);i+=1
+              try:
+                  inner=resource('GPT_HWPX_원클릭_기하로마체.exe')
+                  if test is not None:
+                      return run_inner_with_file(test.read_text(encoding='utf-8-sig'),passthrough)
+                  original=get_clipboard()
+                  if not original.strip():msg('ChatGPT 답변을 먼저 복사(Ctrl+C)한 뒤 다시 실행해주세요.');return 2
+                  normalized=normalize_geometry_symbols(original);set_clipboard(normalized)
+                  try:
+                      si=subprocess.STARTUPINFO();si.dwFlags|=subprocess.STARTF_USESHOWWINDOW
+                      return subprocess.run([str(inner)],startupinfo=si,creationflags=CREATE_NO_WINDOW,timeout=180).returncode
+                  finally:
+                      try:set_clipboard(original)
+                      except:pass
+              except Exception as e:msg(str(e));return 1
+
+          if __name__=='__main__':raise SystemExit(main())
+          '@
+
+          Set-Content 'app/sample.md' -Encoding utf8 -Value @'
+          정답은 `\boxed{⑤}`입니다.
+
+          [해설]
+          도형에서 대응하는 선분에 의하여
+          `AD=AE=AP,\quad BE=BP,\quad CD=CP`이다.
+
+          전개도에서
+          $$
+          \angle DAC=90^\circ,\qquad \angle PAC=90^\circ
+          $$
+          이다.
+
+          두 직선 `AP,AB`는 평면 PAB 위에서 서로 만나므로
+          $$
+          AC\perp \text{평면 }PAB
+          $$
+          이다.
+
+          또한
+          $$
+          PM\perp AB,\qquad PM\perp AC
+          $$
+          이므로
+          $$
+          PM\perp \text{평면 }ABC
+          $$
+          이다.
+
+          그리고
+          $$
+          AB\parallel CD
+          $$
+          이다.
+          '@
+
+          Set-Content 'app/check.py' -Encoding utf8 -Value @'
+          import sys,zipfile,xml.etree.ElementTree as E
+          ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}
+          with zipfile.ZipFile(sys.argv[1]) as z:root=E.fromstring(z.read('Contents/section0.xml'))
+          scripts=[x.text or '' for x in root.findall('.//hp:equation/hp:script',ns)]
+          joined='\n'.join(scripts)
+          # Native Hancom geometry commands should survive as commands, not English text artifacts.
+          assert ' bot ' in (' '+joined+' '),scripts
+          assert ' parallel ' in (' '+joined+' '),scripts
+          assert 'PERP' not in joined and 'PARALLEL' not in joined,scripts
+          assert '°' in joined,scripts
+          assert 'circ' not in joined.lower(),scripts
+          assert 'angle' in joined.lower(),scripts
+          for token in ['rm DAC it','rm PAC it','rm PAB it','rm ABC it','rm AB it','rm AC it','rm PM it','rm CD it']:
+              assert token in joined,(token,scripts)
+          print('GEOMETRY SYMBOLS OK')
+          print(scripts)
+          '@
+
+      - name: Build geometry symbols EXE
+        shell: pwsh
+        run: |
+          $inner=(Resolve-Path 'app/GPT_HWPX_원클릭_기하로마체.exe').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name GPT_HWPX_원클릭_기하기호보정 `
+            --distpath dist --workpath build `
+            --add-binary "$inner;." app/wrapper.py
+
+      - name: End-to-end test
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $p=Start-Process '.\dist\GPT_HWPX_원클릭_기하기호보정.exe' -ArgumentList @('--test-input','app/sample.md','--output-dir','out','--no-open') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "wrapper exit $($p.ExitCode)"}
+          $o=Get-ChildItem 'out\*.hwpx'|Sort-Object LastWriteTime -Descending|Select-Object -First 1
+          if($null -eq $o){throw 'HWPX not created'}
+          python -m zipfile -t $o.FullName
+          if($LASTEXITCODE -ne 0){throw 'HWPX ZIP check failed'}
+          python app/check.py $o.FullName
+          if($LASTEXITCODE -ne 0){throw 'geometry symbol regression failed'}
+          Copy-Item $o.FullName 'out/GPT_HWPX_기하기호보정_테스트.hwpx' -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_GeometrySymbols_Windows
+          path: |
+            dist/GPT_HWPX_원클릭_기하기호보정.exe
+            out/GPT_HWPX_기하기호보정_테스트.hwpx
+          if-no-files-found: error
+          retention-days: 7
