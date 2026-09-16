@@ -83,28 +83,26 @@ jobs:
               finally:u.CloseClipboard()
 
           def normalize_geometry_symbols(text):
-              # Hancom equation commands are case-sensitive. Feed native-style tokens
-              # instead of letting the older converter turn them into PERP/PARALLEL text.
-              text=text.replace(r'\perp',' bot ')
-              text=text.replace('⊥',' bot ')
-              text=text.replace(r'\parallel',' parallel ')
-              text=text.replace('∥',' parallel ')
+              # Keep command boundaries explicit. The core converter turns \, into HWP '~' spacing.
+              text=text.replace(r'\perp',r'\,bot\,')
+              text=text.replace('⊥',r'\,bot\,')
+              text=text.replace(r'\parallel',r'\,parallel\,')
+              text=text.replace('∥',r'\,parallel\,')
 
-              # Degree: avoid the generic script-scope fixer turning ^circ into ^{c}irc.
-              text=re.sub(r'\^\s*\{\s*\\circ\s*\}', '°', text)
-              text=re.sub(r'\^\s*\\circ\b', '°', text)
-              text=re.sub(r'\^\s*\{\s*\\degree\s*\}', '°', text)
-              text=re.sub(r'\^\s*\\degree\b', '°', text)
-              text=text.replace(r'\degree','°')
+              # Degree: preserve Hancom's circ command as one grouped superscript token.
+              text=re.sub(r'\^\s*\{\s*\\circ\s*\}', r'^{circ}', text)
+              text=re.sub(r'\^\s*\\circ\b', r'^{circ}', text)
+              text=re.sub(r'\^\s*\{\s*\\degree\s*\}', r'^{circ}', text)
+              text=re.sub(r'\^\s*\\degree\b', r'^{circ}', text)
+              text=text.replace(r'\degree',r'^{circ}')
 
-              # Normalize common Unicode angle to Hancom's angle command if it appears in copied text.
+              # Normalize Unicode angle notation to the Hancom angle command.
               text=re.sub(r'∠\s*([A-Z]{1,4})',lambda m:r'\angle '+m.group(1),text)
 
               # Geometry prose contexts not always inside math: make labels explicit roman math.
               nouns=r'(점|삼각형|사각형|오각형|육각형|선분|직선|반직선|평면|원)'
               def repl(m):
                   noun,label=m.group(1),m.group(2)
-                  # Do not touch if already immediately part of an inline math/backtick expression.
                   return noun+' `\\mathrm{'+label+'}`'
               text=re.sub(nouns+r'\s+([A-Z]{1,6})(?![A-Za-z0-9])',repl,text)
               return text
@@ -177,17 +175,17 @@ jobs:
           '@
 
           Set-Content 'app/check.py' -Encoding utf8 -Value @'
-          import sys,zipfile,xml.etree.ElementTree as E
+          import re,sys,zipfile,xml.etree.ElementTree as E
           ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}
           with zipfile.ZipFile(sys.argv[1]) as z:root=E.fromstring(z.read('Contents/section0.xml'))
           scripts=[x.text or '' for x in root.findall('.//hp:equation/hp:script',ns)]
           joined='\n'.join(scripts)
-          # Native Hancom geometry commands should survive as commands, not English text artifacts.
-          assert ' bot ' in (' '+joined+' '),scripts
-          assert ' parallel ' in (' '+joined+' '),scripts
+          assert re.search(r'(?<![A-Za-z])bot(?![A-Za-z])',joined),scripts
+          assert re.search(r'(?<![A-Za-z])parallel(?![A-Za-z])',joined),scripts
+          assert 'itbot' not in joined and 'itparallel' not in joined,scripts
           assert 'PERP' not in joined and 'PARALLEL' not in joined,scripts
-          assert '°' in joined,scripts
-          assert 'circ' not in joined.lower(),scripts
+          assert '^{circ}' in joined,scripts
+          assert '�' not in joined,scripts
           assert 'angle' in joined.lower(),scripts
           for token in ['rm DAC it','rm PAC it','rm PAB it','rm ABC it','rm AB it','rm AC it','rm PM it','rm CD it']:
               assert token in joined,(token,scripts)
