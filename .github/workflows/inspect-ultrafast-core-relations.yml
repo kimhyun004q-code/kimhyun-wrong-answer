@@ -1,0 +1,35 @@
+name: Inspect UltraFast Core Relations
+
+on:
+  push:
+    branches: [gpt-to-hwpx-build]
+    paths: ['.github/workflows/inspect-ultrafast-core-relations.yml']
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore source
+        shell: bash
+        run: |
+          mkdir -p app
+          python - <<'PY'
+          import base64,gzip,pathlib
+          p=pathlib.Path
+          p('app/ultrafast_core.py').write_bytes(gzip.decompress(base64.b64decode(p('gpt_hwpx_ultrafast_fixed/core.gz.b64').read_bytes())))
+          PY
+      - name: Show relation-related code
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('app/ultrafast_core.py').read_text(encoding='utf-8').splitlines()
+          keys=('def ','leq','geq','neq','less','greater','<','>','\\le','\\ge','\\lt','\\gt')
+          for i,line in enumerate(s,1):
+              if line.lstrip().startswith('def ') or any(k in line for k in ('leq','geq','neq','\\le','\\ge','\\lt','\\gt','≤','≥','≠')):
+                  lo=max(1,i-2); hi=min(len(s),i+4)
+                  print(f'--- {lo}-{hi} ---')
+                  for j in range(lo,hi+1): print(f'{j:04d}: {s[j-1]}')
+          PY
