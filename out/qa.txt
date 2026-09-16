@@ -1,0 +1,7 @@
+union_operator_tokens_replaced=4
+unicode_union_count_after=4
+picture_ids=['image1', 'image2']
+resolved_pictures=['BinData/image1.png', 'BinData/image2.png']
+xml_files_checked=9
+zip_crc=OK
+contains_출제의도=False
