@@ -1,4 +1,4 @@
-name: Build GPT HWPX UltraFast Roman Fix
+name: Build GPT HWPX UltraFast Roman Relation Fix
 
 on:
   push:
@@ -78,12 +78,46 @@ jobs:
           p.write_text(s,encoding='utf-8')
           '@
           python app/patch_roman.py
+
+      - name: Patch inequality relations
+        shell: pwsh
+        run: |
+          Set-Content app/patch_relations.py -Encoding utf8 -Value @'
+          from pathlib import Path
+          p=Path('app/ultrafast_core.py')
+          s=p.read_text(encoding='utf-8')
+          anchor="    s = s.replace('&nbsp;', ' ')\n"
+          addition=r'''    # Normalize strict/non-strict inequalities before general symbol conversion.
+              # Hancom has dedicated LEQ/GEQ/neq relation commands; use them instead of <=/>=/!= text.
+              s = s.replace('&lt;', '<').replace('&gt;', '>').replace('＜', '<').replace('＞', '>')
+              s = s.replace('≤', ' LEQ ').replace('≥', ' GEQ ').replace('≠', ' neq ')
+              s = re.sub(r'\\(?:leqslant|leq|le)\b', ' LEQ ', s)
+              s = re.sub(r'\\(?:geqslant|geq|ge)\b', ' GEQ ', s)
+              s = re.sub(r'\\(?:neq|ne)\b', ' neq ', s)
+              s = re.sub(r'\\(?:lt|less)\b', ' < ', s)
+              s = re.sub(r'\\(?:gt|greater)\b', ' > ', s)
+              s = re.sub(r'(?<![<>=!])<=', ' LEQ ', s)
+              s = re.sub(r'(?<![<>=!])>=', ' GEQ ', s)
+              s = re.sub(r'!=', ' neq ', s)
+              # Keep strict < and > as strict relation glyphs, but normalize surrounding token spacing.
+              s = re.sub(r'\s*<\s*', ' < ', s)
+              s = re.sub(r'\s*>\s*', ' > ', s)
+          '''
+          if anchor not in s: raise SystemExit('relation anchor not found')
+          s=s.replace(anchor,anchor+addition,1)
+          s=s.replace("        r'\\geq':'>=', r'\\ge':'>=', r'\\leq':'<=', r'\\le':'<=', r'\\neq':'!=', r'\\ne':'!=', r'\\approx':'APPROX',",
+                      "        r'\\geq':'GEQ', r'\\ge':'GEQ', r'\\leq':'LEQ', r'\\le':'LEQ', r'\\neq':'neq', r'\\ne':'neq', r'\\approx':'APPROX',")
+          s=s.replace("        '≤':'<=','≥':'>=','≠':'!=','→':'rarrow','⇒':'RARROW','⇔':'LRARROW','↔':'LRARROW',",
+                      "        '≤':'LEQ','≥':'GEQ','≠':'neq','→':'rarrow','⇒':'RARROW','⇔':'LRARROW','↔':'LRARROW',")
+          p.write_text(s,encoding='utf-8')
+          '@
+          python app/patch_relations.py
           python -m py_compile app/ultrafast_core.py app/ultrafast_app.py
 
       - name: Install build dependencies
         run: python -m pip install --upgrade pyinstaller pymupdf
 
-      - name: Roman regression test
+      - name: Roman and inequality regression test
         shell: pwsh
         run: |
           Set-Content app/sample.txt -Encoding utf8 -Value @'
@@ -92,42 +126,47 @@ jobs:
           점 $A$와 점 \(B\)를 잇는 선분 `CD`를 생각한다.
           삼각형 $PQR$와 평면 $ABC$를 생각한다.
           함수 $A(x)=x$와 변수 $x,a,b$는 이탤릭으로 둔다.
+          $-2 < x < \frac{3}{2}$
+          $-2 \le x \leq \frac{3}{2}$
+          $a \ge b$, $c \geq d$, $p \neq q$
+          $0 ≤ t < 1$, $u > v ≥ -3$
+          $1 &lt; y &lt; 5$
           '@
           New-Item -ItemType Directory -Force -Path outsrc | Out-Null
           Push-Location app
           python ultrafast_app.py --test-input sample.txt --output-dir ../outsrc --no-open --validate
           Pop-Location
-          python -c "import zipfile,xml.etree.ElementTree as E,pathlib; p=next(pathlib.Path('outsrc').glob('*.hwpx')); z=zipfile.ZipFile(p); r=E.fromstring(z.read('Contents/section0.xml')); ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}; scripts=[s.text or '' for s in r.findall('.//hp:script',ns)]; j='\\n'.join(scripts); assert 'rm A it' in j,j; assert 'rm B it' in j,j; assert 'rm CD it' in j,j; assert 'rm PQR it' in j,j; assert 'rm ABC it' in j,j; assert 'A(x)=x' in j,j; print('ROMAN REGRESSION OK')"
+          python -c "import zipfile,xml.etree.ElementTree as E,pathlib; p=next(pathlib.Path('outsrc').glob('*.hwpx')); z=zipfile.ZipFile(p); r=E.fromstring(z.read('Contents/section0.xml')); ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}; scripts=[s.text or '' for s in r.findall('.//hp:script',ns)]; j='\\n'.join(scripts); assert 'rm A it' in j,j; assert 'rm B it' in j,j; assert 'rm CD it' in j,j; assert 'rm PQR it' in j,j; assert 'rm ABC it' in j,j; assert 'A(x)=x' in j,j; assert j.count('LEQ')>=3,j; assert j.count('GEQ')>=3,j; assert 'neq' in j,j; assert '<' in j and '>' in j,j; assert '<=' not in j and '>=' not in j,j; print('ROMAN + RELATION REGRESSION OK')"
 
       - name: Build EXEs
         shell: pwsh
         run: |
           $tpl=(Resolve-Path 'app/direct_hwpx_template.hwpx').Path
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_HWPX_초고속_로마체수정 --distpath dist_onefile --workpath build_onefile --add-data "$tpl;." app/ultrafast_app.py
-          python -m PyInstaller --noconfirm --clean --onedir --windowed --name GPT_HWPX_초고속_FAST_로마체수정 --distpath dist_fast --workpath build_fast --add-data "$tpl;." app/ultrafast_app.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_HWPX_초고속_로마체_부등호수정 --distpath dist_onefile --workpath build_onefile --add-data "$tpl;." app/ultrafast_app.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name GPT_HWPX_초고속_FAST_로마체_부등호수정 --distpath dist_fast --workpath build_fast --add-data "$tpl;." app/ultrafast_app.py
 
       - name: EXE smoke test
         shell: pwsh
         run: |
-          Set-Clipboard -Value '[정답] ② -3`n[해설]`n점 $A$와 점 $B$를 잇는다.'
-          $p=Start-Process '.\dist_fast\GPT_HWPX_초고속_FAST_로마체수정\GPT_HWPX_초고속_FAST_로마체수정.exe' -ArgumentList @('--no-open') -Wait -PassThru
+          Set-Clipboard -Value '[정답] ② -3`n[해설]`n점 $A$에서 $-2 \le x < 3$을 확인한다.'
+          $p=Start-Process '.\dist_fast\GPT_HWPX_초고속_FAST_로마체_부등호수정\GPT_HWPX_초고속_FAST_로마체_부등호수정.exe' -ArgumentList @('--no-open') -Wait -PassThru
           if($p.ExitCode -ne 0){throw "FAST smoke failed: $($p.ExitCode)"}
 
       - name: End-to-end test
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path out | Out-Null
-          $p=Start-Process '.\dist_onefile\GPT_HWPX_초고속_로마체수정.exe' -ArgumentList @('--test-input','app/sample.txt','--output-dir','out','--no-open','--validate') -Wait -PassThru
+          $p=Start-Process '.\dist_onefile\GPT_HWPX_초고속_로마체_부등호수정.exe' -ArgumentList @('--test-input','app/sample.txt','--output-dir','out','--no-open','--validate') -Wait -PassThru
           if($p.ExitCode -ne 0){throw "onefile exit $($p.ExitCode)"}
           $o=Get-ChildItem 'out\*.hwpx'|Select-Object -First 1
-          Copy-Item $o.FullName 'out/GPT_HWPX_로마체수정_테스트.hwpx' -Force
+          Copy-Item $o.FullName 'out/GPT_HWPX_로마체_부등호수정_테스트.hwpx' -Force
 
       - uses: actions/upload-artifact@v4
         with:
-          name: GPT_HWPX_UltraFast_RomanFix_Windows
+          name: GPT_HWPX_UltraFast_Roman_RelationFix_Windows
           path: |
-            dist_onefile/GPT_HWPX_초고속_로마체수정.exe
-            dist_fast/GPT_HWPX_초고속_FAST_로마체수정/**
-            out/GPT_HWPX_로마체수정_테스트.hwpx
+            dist_onefile/GPT_HWPX_초고속_로마체_부등호수정.exe
+            dist_fast/GPT_HWPX_초고속_FAST_로마체_부등호수정/**
+            out/GPT_HWPX_로마체_부등호수정_테스트.hwpx
           if-no-files-found: error
           retention-days: 7
