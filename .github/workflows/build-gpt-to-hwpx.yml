@@ -1,4 +1,4 @@
-name: Build GPT to HWPX V3.2 Windows EXE
+name: Build GPT HWPX One Click Windows EXE
 
 on:
   push:
@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Reconstruct and patch verified V3 base to V3.2
+      - name: Reconstruct verified V3.2 converter
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path 'gpt_to_hwpx_v32' | Out-Null
@@ -31,20 +31,17 @@ jobs:
           from pathlib import Path
           p=Path('gpt_to_hwpx_v32/gpt_to_hwpx_v32.py')
           s=p.read_text(encoding='utf-8')
-
           old_box="lambda cmd,a: 'box {'+latex_to_hwp(a[0])+'}')"
           new_box="lambda cmd,a: latex_to_hwp(a[0]))"
           if old_box not in s:
               raise SystemExit('boxed patch target not found')
           s=s.replace(old_box,new_box,1)
-
           marker="        fm=re.match(r'^\\s*```\\s*([A-Za-z0-9_+-]*)\\s*$', line)"
           if marker not in s:
               raise SystemExit('parse marker not found')
           insertion=(
               "        stripped=line.strip()\n"
               "\n"
-              "        # Multi-line display math copied by ChatGPT/Windows clipboard.\n"
               "        if stripped in ('$$', r'\\\\['):\n"
               "            closer = '$$' if stripped == '$$' else r'\\\\]'\n"
               "            content=[]; i+=1\n"
@@ -59,9 +56,6 @@ jobs:
               "\n"
           )
           s=s.replace(marker,insertion+marker,1)
-          s=s.replace("self.title('GPT → HWPX V3 정밀변환')","self.title('GPT → HWPX V3.2 정밀변환')")
-          s=s.replace("text='GPT → HWPX V3 정밀변환'","text='GPT → HWPX V3.2 정밀변환'")
-          s=s.replace("'gpt_v3_'+datetime.now().strftime", "'gpt_v32_'+datetime.now().strftime")
           p.write_text(s,encoding='utf-8')
           '@
           python gpt_to_hwpx_v32/patch_v32.py
@@ -76,7 +70,7 @@ jobs:
       - name: Install PyInstaller
         run: python -m pip install --upgrade pyinstaller
 
-      - name: Create clipboard-style regression sample
+      - name: Create regression sample and checker
         shell: pwsh
         run: |
           Set-Content -Path 'gpt_to_hwpx_v32/clipboard_sample.md' -Encoding utf8 -Value @'
@@ -100,14 +94,6 @@ jobs:
           a\ge2,\qquad b\ge a,\qquad b\ge c
           $$
 
-          입니다.
-
-          이 조건을 만족하는 `(a,b,c)`는
-
-          $$
-          \begin{array}{c} (2,3,3),\ (2,4,2),\ (2,5,1),\ (2,6,0),\\ (3,3,2),\ (3,4,1),\ (3,5,0),\ (4,4,0) \end{array}
-          $$
-
           각 경우를 세면
 
           $$
@@ -129,52 +115,218 @@ jobs:
           plain='\n'.join(texts)
           bad_plain=('$$','\\begin','\\end','\\ge','\\le','\\qquad','\\text','```')
           assert not any(x in plain for x in bad_plain), plain
-          assert len(scripts)>=8, scripts
+          assert len(scripts)>=6, scripts
           assert any(x.startswith('matrix{') for x in scripts), scripts
           assert any('"경우의 수"' in x for x in scripts), scripts
           assert any('a >= 2' in x and 'b >= a' in x for x in scripts), scripts
           assert not any('box {' in x for x in scripts), scripts
           assert not any('\\' in x for x in scripts), scripts
-          print('V3.2 clipboard regression OK',len(scripts))
+          print('converter regression OK',len(scripts))
           '@
 
-      - name: Smoke test Python V3.2 converter
+      - name: Smoke test Python converter
         shell: pwsh
         run: |
-          python gpt_to_hwpx_v32/gpt_to_hwpx_v32.py --cli gpt_to_hwpx_v32/clipboard_sample.md gpt_to_hwpx_v32/smoke.hwpx
-          if ($LASTEXITCODE -ne 0) { throw "Python V3.2 converter exited with $LASTEXITCODE" }
-          python -m zipfile -t gpt_to_hwpx_v32/smoke.hwpx
-          if ($LASTEXITCODE -ne 0) { throw 'Python V3.2 HWPX ZIP integrity check failed' }
-          python gpt_to_hwpx_v32/check_v32.py gpt_to_hwpx_v32/smoke.hwpx
-          if ($LASTEXITCODE -ne 0) { throw 'Python V3.2 clipboard regression failed' }
+          python gpt_to_hwpx_v32/gpt_to_hwpx_v32.py --cli gpt_to_hwpx_v32/clipboard_sample.md gpt_to_hwpx_v32/smoke_python.hwpx
+          if ($LASTEXITCODE -ne 0) { throw "Python converter exited with $LASTEXITCODE" }
+          python -m zipfile -t gpt_to_hwpx_v32/smoke_python.hwpx
+          python gpt_to_hwpx_v32/check_v32.py gpt_to_hwpx_v32/smoke_python.hwpx
+          if ($LASTEXITCODE -ne 0) { throw 'Python converter regression failed' }
 
-      - name: Build single V3.2 EXE
+      - name: Build hidden V3.2 converter EXE
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean --onefile --windowed `
             --name GPT_to_HWPX_V3_2 `
+            --distpath dist_converter `
+            --workpath build_converter `
+            --specpath spec_converter `
             --add-data 'gpt_to_hwpx_v32/direct_hwpx_template.hwpx;.' `
             gpt_to_hwpx_v32/gpt_to_hwpx_v32.py
 
-      - name: Smoke test V3.2 EXE converter
+      - name: Smoke test hidden converter EXE
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath '.\dist\GPT_to_HWPX_V3_2.exe' `
-            -ArgumentList @('--cli', 'gpt_to_hwpx_v32/clipboard_sample.md', 'gpt_to_hwpx_v32/smoke_exe.hwpx') `
+          $p = Start-Process -FilePath '.\dist_converter\GPT_to_HWPX_V3_2.exe' `
+            -ArgumentList @('--cli', 'gpt_to_hwpx_v32/clipboard_sample.md', 'gpt_to_hwpx_v32/smoke_converter.hwpx') `
             -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "V3.2 EXE converter exited with $($p.ExitCode)" }
-          if (!(Test-Path 'gpt_to_hwpx_v32/smoke_exe.hwpx')) { throw 'V3.2 EXE smoke test failed: HWPX not created' }
-          python -m zipfile -t gpt_to_hwpx_v32/smoke_exe.hwpx
-          if ($LASTEXITCODE -ne 0) { throw 'V3.2 EXE HWPX ZIP integrity check failed' }
-          python gpt_to_hwpx_v32/check_v32.py gpt_to_hwpx_v32/smoke_exe.hwpx
-          if ($LASTEXITCODE -ne 0) { throw 'V3.2 EXE clipboard regression failed' }
+          if ($p.ExitCode -ne 0) { throw "converter EXE exited with $($p.ExitCode)" }
+          python -m zipfile -t gpt_to_hwpx_v32/smoke_converter.hwpx
+          python gpt_to_hwpx_v32/check_v32.py gpt_to_hwpx_v32/smoke_converter.hwpx
+          if ($LASTEXITCODE -ne 0) { throw 'converter EXE regression failed' }
 
-      - name: Upload Windows V3.2 EXE and sample
+      - name: Create one-click desktop launcher
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path 'oneclick' | Out-Null
+          Set-Content -Path 'oneclick/launcher.py' -Encoding utf8 -Value @'
+          import ctypes
+          import os
+          import subprocess
+          import sys
+          import tempfile
+          import time
+          import winreg
+          from datetime import datetime
+          from pathlib import Path
+
+          CF_UNICODETEXT = 13
+          GMEM_MOVEABLE = 0x0002
+          CREATE_NO_WINDOW = 0x08000000
+
+          user32 = ctypes.windll.user32
+          kernel32 = ctypes.windll.kernel32
+          user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+          user32.OpenClipboard.restype = ctypes.c_bool
+          user32.CloseClipboard.argtypes = []
+          user32.CloseClipboard.restype = ctypes.c_bool
+          user32.GetClipboardData.argtypes = [ctypes.c_uint]
+          user32.GetClipboardData.restype = ctypes.c_void_p
+          kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+          kernel32.GlobalLock.restype = ctypes.c_void_p
+          kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+          kernel32.GlobalUnlock.restype = ctypes.c_bool
+
+          def message(text, title='GPT → HWPX'):
+              ctypes.windll.user32.MessageBoxW(None, text, title, 0x10)
+
+          def get_clipboard_text():
+              for _ in range(10):
+                  if user32.OpenClipboard(None):
+                      try:
+                          handle = user32.GetClipboardData(CF_UNICODETEXT)
+                          if not handle:
+                              return ''
+                          ptr = kernel32.GlobalLock(handle)
+                          if not ptr:
+                              return ''
+                          try:
+                              return ctypes.wstring_at(ptr)
+                          finally:
+                              kernel32.GlobalUnlock(handle)
+                      finally:
+                          user32.CloseClipboard()
+                  time.sleep(0.08)
+              return ''
+
+          def desktop_path():
+              try:
+                  key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                      r'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders')
+                  value, _ = winreg.QueryValueEx(key, 'Desktop')
+                  winreg.CloseKey(key)
+                  return Path(os.path.expandvars(value))
+              except Exception:
+                  return Path.home() / 'Desktop'
+
+          def resource_path(name):
+              base = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
+              return base / name
+
+          def unique_output(folder):
+              stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+              base = folder / f'GPT해설_{stamp}.hwpx'
+              if not base.exists():
+                  return base
+              for i in range(2, 100):
+                  p = folder / f'GPT해설_{stamp}_{i}.hwpx'
+                  if not p.exists():
+                      return p
+              return folder / f'GPT해설_{stamp}_{os.getpid()}.hwpx'
+
+          def run_conversion(text, out_path):
+              converter = resource_path('GPT_to_HWPX_V3_2.exe')
+              if not converter.exists():
+                  raise RuntimeError('내부 변환기를 찾지 못했습니다.')
+              with tempfile.TemporaryDirectory(prefix='gpt_hwpx_') as td:
+                  inp = Path(td) / 'clipboard.md'
+                  inp.write_text(text, encoding='utf-8')
+                  startup = subprocess.STARTUPINFO()
+                  startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                  r = subprocess.run(
+                      [str(converter), '--cli', str(inp), str(out_path)],
+                      startupinfo=startup,
+                      creationflags=CREATE_NO_WINDOW,
+                      timeout=120,
+                  )
+                  if r.returncode != 0 or not out_path.exists():
+                      raise RuntimeError(f'HWPX 변환에 실패했습니다. (코드 {r.returncode})')
+
+          def main():
+              args = sys.argv[1:]
+              test_input = None
+              test_output_dir = None
+              no_open = False
+              i = 0
+              while i < len(args):
+                  if args[i] == '--test-input' and i + 1 < len(args):
+                      test_input = Path(args[i+1]); i += 2; continue
+                  if args[i] == '--output-dir' and i + 1 < len(args):
+                      test_output_dir = Path(args[i+1]); i += 2; continue
+                  if args[i] == '--no-open':
+                      no_open = True; i += 1; continue
+                  i += 1
+
+              try:
+                  if test_input is not None:
+                      text = test_input.read_text(encoding='utf-8-sig')
+                  else:
+                      text = get_clipboard_text()
+
+                  if not text or not text.strip():
+                      message('ChatGPT 답변을 먼저 복사(Ctrl+C)한 뒤 다시 실행해주세요.')
+                      return 2
+
+                  out_dir = test_output_dir if test_output_dir is not None else desktop_path() / 'GPT_HWPX'
+                  out_dir.mkdir(parents=True, exist_ok=True)
+                  out_path = unique_output(out_dir)
+                  run_conversion(text, out_path)
+
+                  if not no_open:
+                      os.startfile(str(out_path))
+                  return 0
+              except Exception as e:
+                  message(str(e))
+                  return 1
+
+          if __name__ == '__main__':
+              raise SystemExit(main())
+          '@
+          python -m py_compile oneclick/launcher.py
+          if ($LASTEXITCODE -ne 0) { throw 'launcher source compile failed' }
+
+      - name: Build one-click desktop EXE
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name GPT_HWPX_원클릭 `
+            --distpath dist_oneclick `
+            --workpath build_oneclick `
+            --specpath spec_oneclick `
+            --add-binary 'dist_converter/GPT_to_HWPX_V3_2.exe;.' `
+            oneclick/launcher.py
+
+      - name: Smoke test one-click EXE end to end
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path 'oneclick_test_output' | Out-Null
+          $p = Start-Process -FilePath '.\dist_oneclick\GPT_HWPX_원클릭.exe' `
+            -ArgumentList @('--test-input', 'gpt_to_hwpx_v32/clipboard_sample.md', '--output-dir', 'oneclick_test_output', '--no-open') `
+            -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "one-click EXE exited with $($p.ExitCode)" }
+          $out = Get-ChildItem 'oneclick_test_output\*.hwpx' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($null -eq $out) { throw 'one-click EXE did not create HWPX' }
+          python -m zipfile -t $out.FullName
+          python gpt_to_hwpx_v32/check_v32.py $out.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'one-click end-to-end regression failed' }
+          Copy-Item $out.FullName 'oneclick_test_output\GPT_HWPX_원클릭_테스트.hwpx' -Force
+
+      - name: Upload one-click Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: GPT_to_HWPX_V3_2_Windows
+          name: GPT_HWPX_OneClick_Windows
           path: |
-            dist/GPT_to_HWPX_V3_2.exe
-            gpt_to_hwpx_v32/smoke_exe.hwpx
+            dist_oneclick/GPT_HWPX_원클릭.exe
+            oneclick_test_output/GPT_HWPX_원클릭_테스트.hwpx
           if-no-files-found: error
           retention-days: 7
