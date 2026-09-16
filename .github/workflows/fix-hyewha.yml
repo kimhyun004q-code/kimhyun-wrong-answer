@@ -1,0 +1,229 @@
+name: Fix Hyewha HWPX
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/fix-hyewha.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download inputs
+        shell: bash
+        run: |
+          python - <<'PY'
+          import urllib.request
+          urls = {
+            'hyewha_current.hwpx': 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-3a04-81f5-9b16-e6b9e845462c/raw?se=2026-09-16T08%3A00%3A08Z&sp=r&sv=2026-02-06&sr=b&scid=8163dba2-59e8-5d6c-8292-ac73340faa3a&skoid=80e81ea6-3c08-46f9-bd84-b87176742bcd&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-16T06%3A32%3A51Z&ske=2026-09-17T06%3A32%3A51Z&sks=b&skv=2026-02-06&sig=izVeOiOdhJoqo7xmom8tU/PMtTaDW9D9MIYTmLP8NZQ%3D',
+            'p11crop.png': 'https://sdmntprwestus3.oaiusercontent.com/files/00000000-3560-81fd-a202-a0d3367d8a87/raw?se=2026-09-16T08%3A01%3A02Z&sp=r&sv=2026-02-06&sr=b&scid=3845b68d-687d-5c80-a6c7-9542d2a0270d&skoid=80e81ea6-3c08-46f9-bd84-b87176742bcd&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-16T03%3A26%3A44Z&ske=2026-09-17T03%3A26%3A44Z&sks=b&skv=2026-02-06&sig=Pjuz5dM5pMmJ8bMFAIM5PZhseBuq9wmN1%2BeeQT621SE%3D'
+          }
+          for fn,u in urls.items():
+              print('downloading', fn)
+              urllib.request.urlretrieve(u, fn)
+          PY
+          ls -lh hyewha_current.hwpx p11crop.png
+
+      - name: Install Python deps
+        run: pip install lxml pillow
+
+      - name: Replace original graph and enlarge problem gaps
+        shell: bash
+        run: |
+          python - <<'PY'
+          import io, os, re, copy, zipfile
+          from lxml import etree
+          from PIL import Image
+
+          src='hyewha_current.hwpx'
+          crop='p11crop.png'
+          outdir='output'
+          os.makedirs(outdir, exist_ok=True)
+          out=os.path.join(outdir, '기출의 현장_대구혜화여고_2학년_2026_1학기중간_대수_해설미주완성_원본그림_문항간격5줄.hwpx')
+
+          with zipfile.ZipFile(src,'r') as zin:
+              infos=zin.infolist()
+              data={i.filename: zin.read(i.filename) for i in infos}
+
+          secname=next((n for n in data if n.endswith('Contents/section0.xml') or n=='Contents/section0.xml'), None)
+          if not secname:
+              secname=next(n for n in data if n.endswith('section0.xml'))
+          hdrname=next((n for n in data if n.endswith('Contents/header.xml') or n=='Contents/header.xml'), None)
+          if not hdrname:
+              hdrname=next(n for n in data if n.endswith('header.xml'))
+
+          parser=etree.XMLParser(remove_blank_text=False, recover=False)
+          sec=etree.fromstring(data[secname], parser)
+          hdr=etree.fromstring(data[hdrname], parser)
+
+          def lname(el):
+              return etree.QName(el).localname
+          def ptext(p):
+              return ''.join((t.text or '') for t in p.iter() if lname(t)=='t').strip()
+          paras=[p for p in sec.iter() if lname(p)=='p']
+
+          # Find question 11 graph paragraph and its binary image reference.
+          target_idx=None
+          for i,p in enumerate(paras):
+              tx=ptext(p).replace(' ','')
+              if '그래프가다음그림과같다' in tx:
+                  target_idx=i; break
+          if target_idx is None:
+              # fallback: the question immediately before choices ①②③ following a graph-bearing paragraph
+              for i,p in enumerate(paras):
+                  tx=ptext(p).replace(' ','')
+                  if '함수' in tx and '그래프' in tx and '그림' in tx:
+                      target_idx=i; break
+          if target_idx is None:
+              raise RuntimeError('Could not find graph question paragraph')
+
+          ref=None
+          ref_el=None
+          ref_para=None
+          for j in range(target_idx, min(target_idx+8, len(paras))):
+              p=paras[j]
+              for el in p.iter():
+                  for k,v in el.attrib.items():
+                      if k.endswith('binaryItemIDRef') or etree.QName(k).localname=='binaryItemIDRef':
+                          ref=v; ref_el=el; ref_para=p; break
+                  if ref: break
+              if ref: break
+          if not ref:
+              # fallback: choose nearest picture reference before the choices following target
+              allrefs=[]
+              for j,p in enumerate(paras):
+                  for el in p.iter():
+                      for k,v in el.attrib.items():
+                          if k.endswith('binaryItemIDRef') or etree.QName(k).localname=='binaryItemIDRef':
+                              allrefs.append((j,v,el,p))
+                              break
+              near=[x for x in allrefs if target_idx-2 <= x[0] <= target_idx+12]
+              if not near:
+                  raise RuntimeError('No image reference near graph question')
+              j,ref,ref_el,ref_para=near[0]
+
+          href=None
+          media=None
+          for el in hdr.iter():
+              if el.attrib.get('id')==ref:
+                  href=el.attrib.get('href') or el.attrib.get('fileRef') or el.attrib.get('path')
+                  media=el.attrib.get('media-type') or el.attrib.get('mediaType')
+                  if href: break
+          if not href:
+              # common HWPX convention: ref like image1 -> BinData/image1.png/jpg
+              cands=[n for n in data if n.startswith('BinData/') and os.path.splitext(os.path.basename(n))[0]==ref]
+              if not cands:
+                  cands=[n for n in data if n.startswith('BinData/') and ref in os.path.basename(n)]
+              if not cands:
+                  raise RuntimeError(f'Could not map image ref {ref} to BinData file')
+              href=cands[0]
+          href=href.lstrip('./')
+          if href not in data and ('BinData/'+href) in data:
+              href='BinData/'+href
+          if href not in data:
+              raise RuntimeError(f'Image href {href} not present in archive')
+
+          # Convert source crop to the same image format as the existing HWPX resource.
+          ext=os.path.splitext(href)[1].lower()
+          im=Image.open(crop).convert('RGB' if ext in ('.jpg','.jpeg') else 'RGBA')
+          buf=io.BytesIO()
+          if ext in ('.jpg','.jpeg'):
+              im.save(buf,'JPEG',quality=96,subsampling=0)
+          elif ext=='.bmp':
+              im.save(buf,'BMP')
+          else:
+              im.save(buf,'PNG')
+          old_size=len(data[href])
+          data[href]=buf.getvalue()
+          print('GRAPH_REF', ref)
+          print('GRAPH_FILE', href)
+          print('GRAPH_BYTES_OLD_NEW', old_size, len(data[href]))
+          print('GRAPH_TARGET_PARAGRAPH', ptext(paras[target_idx])[:200])
+
+          # Add four extra blank paragraphs after the existing line gap following each objective problem.
+          # This makes the visual gap approximately five lines in total.
+          def blank_like(p):
+              b=etree.Element(p.tag, attrib=dict(p.attrib), nsmap=None)
+              # copy paragraph properties/control nodes if present only when they define layout, not text/picture content
+              run_src=next((c for c in p if lname(c)=='run'), None)
+              if run_src is not None:
+                  r=etree.Element(run_src.tag, attrib=dict(run_src.attrib), nsmap=None)
+                  t_src=next((x for x in run_src.iter() if lname(x)=='t'), None)
+                  ttag=t_src.tag if t_src is not None else '{%s}t' % etree.QName(run_src).namespace
+                  t=etree.Element(ttag)
+                  t.text=' '
+                  r.append(t)
+                  b.append(r)
+              return b
+
+          added=0
+          # Snapshot to avoid iterating newly inserted blanks.
+          for p in list(paras):
+              tx=ptext(p)
+              # second choice row marks the end of an objective question.
+              if '④' in tx and '⑤' in tx:
+                  parent=p.getparent(); pos=parent.index(p)
+                  for k in range(4):
+                      parent.insert(pos+1+k, blank_like(p))
+                      added+=1
+          # Subjective problem headings: add four blank lines before 서답형 2~4.
+          for p in list(sec.iter()):
+              if lname(p)!='p': continue
+              tx=ptext(p)
+              if re.match(r'^\[서답형\s*[234]\]$', tx):
+                  parent=p.getparent(); pos=parent.index(p)
+                  for k in range(4):
+                      parent.insert(pos+k, blank_like(p))
+                      added+=1
+          print('BLANK_PARAGRAPHS_ADDED', added)
+
+          # Serialize section XML and validate both modified XML and expected markers.
+          secbytes=etree.tostring(sec, xml_declaration=True, encoding='UTF-8', standalone=None)
+          etree.fromstring(secbytes)
+          data[secname]=secbytes
+
+          # Ensure forbidden section label is absent in visible text.
+          alltext=''.join((t.text or '') for t in sec.iter() if lname(t)=='t')
+          print('HAS_출제의도', '[출제의도]' in alltext)
+          print('PARA_COUNT_AFTER', sum(1 for e in sec.iter() if lname(e)=='p'))
+
+          with zipfile.ZipFile(out,'w') as zout:
+              for info in infos:
+                  payload=data[info.filename]
+                  # Preserve original archive metadata/compression, especially uncompressed mimetype entry.
+                  zout.writestr(info, payload)
+
+          # Final archive validation.
+          with zipfile.ZipFile(out,'r') as z:
+              bad=z.testzip()
+              if bad: raise RuntimeError('ZIP CRC failure: '+bad)
+              etree.fromstring(z.read(secname))
+              if href not in z.namelist(): raise RuntimeError('Replaced image missing from output')
+          print('OUTPUT', out)
+          print('OUTPUT_SIZE', os.path.getsize(out))
+          PY
+
+      - name: Commit fixed HWPX
+        shell: bash
+        run: |
+          git config user.name "ChatGPT HWPX Fixer"
+          git config user.email "actions@users.noreply.github.com"
+          git add output/*.hwpx
+          git commit -m "Add fixed Hyewha algebra HWPX [skip ci]"
+          git push
+
+      - name: Upload verification artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hyewha-algebra-fixed
+          path: output/*.hwpx
+          if-no-files-found: error
+          retention-days: 30
