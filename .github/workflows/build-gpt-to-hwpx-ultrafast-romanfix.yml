@@ -110,8 +110,7 @@ jobs:
         shell: pwsh
         run: |
           Set-Clipboard -Value '[정답] ② -3`n[해설]`n점 $A$와 점 $B$를 잇는다.'
-          $p=Start-Process '.\dist_fast\GPT_HWPX_초고속_FAST_로마체수정\GPT_HWPX_초고속FAST_로마체수정.exe' -ArgumentList @('--no-open') -Wait -PassThru -ErrorAction SilentlyContinue
-          if($null -eq $p){$p=Start-Process '.\dist_fast\GPT_HWPX_초고속FAST_로마체수정\GPT_HWPX_초고속FAST_로마체수정.exe' -ArgumentList @('--no-open') -Wait -PassThru}
+          $p=Start-Process '.\dist_fast\GPT_HWPX_초고속_FAST_로마체수정\GPT_HWPX_초고속_FAST_로마체수정.exe' -ArgumentList @('--no-open') -Wait -PassThru
           if($p.ExitCode -ne 0){throw "FAST smoke failed: $($p.ExitCode)"}
 
       - name: End-to-end test
@@ -128,7 +127,7 @@ jobs:
           name: GPT_HWPX_UltraFast_RomanFix_Windows
           path: |
             dist_onefile/GPT_HWPX_초고속_로마체수정.exe
-            dist_fast/GPT_HWPX_초고속FAST_로마체수정/**
+            dist_fast/GPT_HWPX_초고속_FAST_로마체수정/**
             out/GPT_HWPX_로마체수정_테스트.hwpx
           if-no-files-found: error
           retention-days: 7
