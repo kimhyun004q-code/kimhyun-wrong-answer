@@ -34,42 +34,40 @@ jobs:
 
           old_box="lambda cmd,a: 'box {'+latex_to_hwp(a[0])+'}')"
           new_box="lambda cmd,a: latex_to_hwp(a[0]))"
-          if old_box in s:
-              s=s.replace(old_box,new_box)
+          if old_box not in s:
+              raise SystemExit('boxed patch target not found')
+          s=s.replace(old_box,new_box,1)
 
-          old_parse="""    while i<len(lines):
-              line=lines[i]
-              fm=re.match(r'^\\s*```\\s*([A-Za-z0-9_+-]*)\\s*$', line)
-          """
-          new_parse="""    while i<len(lines):
-              line=lines[i]
-              stripped=line.strip()
-
-              # ChatGPT on Windows can place display-math delimiters on separate lines.
-              if stripped in ('$$', r'\\['):
-                  closer = '$$' if stripped == '$$' else r'\\]'
-                  content=[]; i+=1
-                  while i<len(lines) and lines[i].strip()!=closer:
-                      content.append(lines[i]); i+=1
-                  if i<len(lines) and lines[i].strip()==closer:
-                      i+=1
-                  raw='\\n'.join(content).strip()
-                  if raw:
-                      blocks.append(('display_math',raw))
-                  continue
-
-              fm=re.match(r'^\\s*```\\s*([A-Za-z0-9_+-]*)\\s*$', line)
-          """
-          if old_parse not in s:
-              raise SystemExit('parse_blocks patch target not found')
-          s=s.replace(old_parse,new_parse)
+          marker="        fm=re.match(r'^\\s*```\\s*([A-Za-z0-9_+-]*)\\s*$', line)"
+          if marker not in s:
+              raise SystemExit('parse marker not found')
+          insertion=(
+              "        stripped=line.strip()\n"
+              "\n"
+              "        # Multi-line display math copied by ChatGPT/Windows clipboard.\n"
+              "        if stripped in ('$$', r'\\\\['):\n"
+              "            closer = '$$' if stripped == '$$' else r'\\\\]'\n"
+              "            content=[]; i+=1\n"
+              "            while i<len(lines) and lines[i].strip()!=closer:\n"
+              "                content.append(lines[i]); i+=1\n"
+              "            if i<len(lines) and lines[i].strip()==closer:\n"
+              "                i+=1\n"
+              "            raw='\\n'.join(content).strip()\n"
+              "            if raw:\n"
+              "                blocks.append(('display_math',raw))\n"
+              "            continue\n"
+              "\n"
+          )
+          s=s.replace(marker,insertion+marker,1)
           s=s.replace("self.title('GPT → HWPX V3 정밀변환')","self.title('GPT → HWPX V3.2 정밀변환')")
           s=s.replace("text='GPT → HWPX V3 정밀변환'","text='GPT → HWPX V3.2 정밀변환'")
           s=s.replace("'gpt_v3_'+datetime.now().strftime", "'gpt_v32_'+datetime.now().strftime")
           p.write_text(s,encoding='utf-8')
           '@
           python gpt_to_hwpx_v32/patch_v32.py
+          if ($LASTEXITCODE -ne 0) { throw 'V3.2 source patch failed' }
           python -m py_compile gpt_to_hwpx_v32/gpt_to_hwpx_v32.py
+          if ($LASTEXITCODE -ne 0) { throw 'V3.2 source compile failed' }
 
           $tpl = ''
           Get-ChildItem 'gpt_to_hwpx_build/template_*.b64' | Sort-Object Name | ForEach-Object { $tpl += Get-Content $_.FullName -Raw }
