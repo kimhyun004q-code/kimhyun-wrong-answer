@@ -1,0 +1,83 @@
+name: Build GPT HWPX UltraFast Fixed
+
+on:
+  push:
+    branches: [gpt-to-hwpx-build]
+    paths: ['.github/workflows/build-gpt-to-hwpx-ultrafast-fixed.yml']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Restore ultrafast sources and template
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path app | Out-Null
+          python -c "import base64,gzip,pathlib; p=pathlib.Path; p('app/ultrafast_app.py').write_bytes(gzip.decompress(base64.b64decode(p('gpt_hwpx_ultrafast_fixed/app.gz.b64').read_bytes()))); p('app/ultrafast_core.py').write_bytes(gzip.decompress(base64.b64decode(p('gpt_hwpx_ultrafast_fixed/core.gz.b64').read_bytes()))); p('app/ultrafast_tikz.py').write_bytes(gzip.decompress(base64.b64decode(p('gpt_hwpx_ultrafast_fixed/tikz.gz.b64').read_bytes())))"
+          python -c "import base64,pathlib; p=pathlib.Path; parts=sorted(p('gpt_to_hwpx_build').glob('template_*.b64')); p('app/direct_hwpx_template.hwpx').write_bytes(base64.b64decode(''.join(x.read_text().strip() for x in parts)))"
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pyinstaller pymupdf
+      - name: Create regression sample
+        shell: pwsh
+        run: |
+          Set-Content app/sample.txt -Encoding utf8 -Value @'
+          [정답] ① -4
+          [해설]
+          함수 $h(x)=f(x)g(x)$의 극한을 구한다.
+          $x\to -2$일 때
+          $$
+          \lim_{x\to -2} h(x)=4
+          $$
+          점 $A$와 점 $B$를 잇는 선분 $AB$를 생각한다.
+          $$
+          AB\perp CD,\qquad \angle ABC=90^\circ
+          $$
+          변수 $a,b,n,x$는 그대로 둔다.
+          '@
+      - name: Regression test source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path outsrc | Out-Null
+          Push-Location app
+          python ultrafast_app.py --test-input sample.txt --output-dir ../outsrc --no-open --validate
+          Pop-Location
+          python -c "import zipfile,xml.etree.ElementTree as E,pathlib; p=next(pathlib.Path('outsrc').glob('*.hwpx')); z=zipfile.ZipFile(p); r=E.fromstring(z.read('Contents/section0.xml')); ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}; paras=[''.join(t.text or '' for t in q.findall('.//hp:t',ns)) for q in r.findall('.//hp:p',ns)]; scripts=[s.text or '' for s in r.findall('.//hp:script',ns)]; j='\\n'.join(scripts); assert paras[0].strip()=='[정답] ①',paras[:3]; assert 'lim _{x rarrow -2}' in j,j; assert 'h(x)=f(x)g(x)' in j,j; assert 'rm A it' in j and 'rm B it' in j and 'rm AB it' in j,j; assert 'a,b,n,x' in j,j; print('SOURCE REGRESSION OK')"
+      - name: Build ultra-fast EXEs
+        shell: pwsh
+        run: |
+          $tpl=(Resolve-Path 'app/direct_hwpx_template.hwpx').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_HWPX_초고속 --distpath dist_onefile --workpath build_onefile --add-data "$tpl;." app/ultrafast_app.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name GPT_HWPX_초고속_FAST --distpath dist_fast --workpath build_fast --add-data "$tpl;." app/ultrafast_app.py
+      - name: End-to-end EXE test and timing
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $sw=[Diagnostics.Stopwatch]::StartNew()
+          $p=Start-Process '.\dist_onefile\GPT_HWPX_초고속.exe' -ArgumentList @('--test-input','app/sample.txt','--output-dir','out','--no-open','--validate') -Wait -PassThru
+          $sw.Stop(); if($p.ExitCode -ne 0){throw "onefile exit $($p.ExitCode)"}
+          Set-Content out/onefile_startup_ms.txt $sw.ElapsedMilliseconds
+          New-Item -ItemType Directory -Force -Path outfast | Out-Null
+          $sw2=[Diagnostics.Stopwatch]::StartNew()
+          $p2=Start-Process '.\dist_fast\GPT_HWPX_초고속_FAST\GPT_HWPX_초고속_FAST.exe' -ArgumentList @('--test-input','app/sample.txt','--output-dir','outfast','--no-open','--validate') -Wait -PassThru
+          $sw2.Stop(); if($p2.ExitCode -ne 0){throw "fast exit $($p2.ExitCode)"}
+          Set-Content out/fast_startup_ms.txt $sw2.ElapsedMilliseconds
+          $o=Get-ChildItem 'out\*.hwpx'|Select-Object -First 1
+          Copy-Item $o.FullName 'out/GPT_HWPX_초고속_테스트.hwpx' -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_UltraFast_Fixed_Windows
+          path: |
+            dist_onefile/GPT_HWPX_초고속.exe
+            dist_fast/GPT_HWPX_초고속_FAST/**
+            out/GPT_HWPX_초고속_테스트.hwpx
+            out/onefile_startup_ms.txt
+            out/fast_startup_ms.txt
+          if-no-files-found: error
+          retention-days: 7
