@@ -49,8 +49,10 @@ jobs:
           $2,3$
           '@
           python gpt_to_hwpx_build/gpt_to_hwpx.py --cli gpt_to_hwpx_build/sample.txt gpt_to_hwpx_build/smoke.hwpx
+          if ($LASTEXITCODE -ne 0) { throw "Python converter exited with $LASTEXITCODE" }
           if (!(Test-Path 'gpt_to_hwpx_build/smoke.hwpx')) { throw 'Python smoke test failed: HWPX not created' }
           python -m zipfile -t gpt_to_hwpx_build/smoke.hwpx
+          if ($LASTEXITCODE -ne 0) { throw 'Python HWPX ZIP integrity check failed' }
 
       - name: Build single EXE
         shell: pwsh
@@ -63,9 +65,13 @@ jobs:
       - name: Smoke test EXE converter
         shell: pwsh
         run: |
-          & '.\dist\GPT_to_HWPX.exe' --cli 'gpt_to_hwpx_build/sample.txt' 'gpt_to_hwpx_build/smoke_exe.hwpx'
+          $p = Start-Process -FilePath '.\dist\GPT_to_HWPX.exe' `
+            -ArgumentList @('--cli', 'gpt_to_hwpx_build/sample.txt', 'gpt_to_hwpx_build/smoke_exe.hwpx') `
+            -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "EXE converter exited with $($p.ExitCode)" }
           if (!(Test-Path 'gpt_to_hwpx_build/smoke_exe.hwpx')) { throw 'EXE smoke test failed: HWPX not created' }
           python -m zipfile -t gpt_to_hwpx_build/smoke_exe.hwpx
+          if ($LASTEXITCODE -ne 0) { throw 'EXE HWPX ZIP integrity check failed' }
 
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
