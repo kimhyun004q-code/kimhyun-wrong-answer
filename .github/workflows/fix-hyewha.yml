@@ -17,12 +17,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download inputs from Drive
+      - name: Install Python deps
+        run: pip install lxml pillow
+
+      - name: Download fresh inputs
         shell: bash
         run: |
           set -euxo pipefail
-          curl -L --fail --retry 2 'https://drive.usercontent.google.com/download?id=1-j6brGYWqtDAPzLYP9tIiZ2n6-BH9xHb&export=download&confirm=t' -o hyewha_current.hwpx
-          curl -L --fail --retry 2 'https://drive.usercontent.google.com/download?id=17Tkiox6-pwpXXb4hhBimjx7XyUxwqZ9j&export=download&confirm=t' -o p11crop.png
+          curl -L --fail --retry 2 -A 'Mozilla/5.0' 'https://sdmntprwestus2.oaiusercontent.com/files/00000000-e818-81f8-bf04-c803a6207b3b/raw?se=2026-09-16T08%3A09%3A39Z&sp=r&sv=2026-02-06&sr=b&scid=1f8e0264-0e5d-5e1c-961e-97f8315b55f7&skoid=80e81ea6-3c08-46f9-bd84-b87176742bcd&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-16T04%3A44%3A44Z&ske=2026-09-17T04%3A44%3A44Z&sks=b&skv=2026-02-06&sig=XdAgOR5qMUDBiPurfz7s48hPCl8Qk1tjH6dC0kdSowk%3D' -o hyewha_current.hwpx
+          curl -L --fail --retry 2 -A 'Mozilla/5.0' 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-6174-81f5-819e-242092d34e09/raw?se=2026-09-16T08%3A09%3A46Z&sp=r&sv=2026-02-06&sr=b&scid=2bb17aa5-cf8f-5795-b94e-6427b7f98a79&skoid=80e81ea6-3c08-46f9-bd84-b87176742bcd&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-16T06%3A17%3A00Z&ske=2026-09-17T06%3A17%3A00Z&sks=b&skv=2026-02-06&sig=aQhsIJsKt0hkMVgk250V4xR4XulRcz1R/cL1u8TThVw%3D' -o p11crop.png
           ls -lh hyewha_current.hwpx p11crop.png
           file hyewha_current.hwpx p11crop.png
           python - <<'PY'
@@ -32,9 +35,6 @@ jobs:
           Image.open('p11crop.png').verify()
           print('INPUTS_OK')
           PY
-
-      - name: Install Python deps
-        run: pip install lxml pillow
 
       - name: Replace graph and add five-line problem gaps
         shell: bash
@@ -58,22 +58,17 @@ jobs:
           def txt(p): return ''.join((t.text or '') for t in p.iter() if ln(t)=='t').strip()
           paras=[p for p in sec.iter() if ln(p)=='p']
 
-          # Locate the problem whose statement says the graph is shown below.
           ti=None
           for i,p in enumerate(paras):
-              s=txt(p).replace(' ','')
-              if '그래프가다음그림과같다' in s:
+              if '그래프가다음그림과같다' in txt(p).replace(' ',''):
                   ti=i; break
-          if ti is None:
-              raise RuntimeError('graph question not found')
+          if ti is None: raise RuntimeError('graph question not found')
 
-          # Locate the nearest embedded picture reference around that question.
           ref=None
           for j in range(max(0,ti-2), min(len(paras),ti+12)):
               for e in paras[j].iter():
                   for k,v in e.attrib.items():
-                      if etree.QName(k).localname=='binaryItemIDRef':
-                          ref=v; break
+                      if etree.QName(k).localname=='binaryItemIDRef': ref=v; break
                   if ref: break
               if ref: break
           if not ref: raise RuntimeError('graph binaryItemIDRef not found')
@@ -92,17 +87,13 @@ jobs:
               href=cands[0]
           if href not in data: raise RuntimeError(f'BinData file missing: {href}')
 
-          # Replace the existing graph bytes with the crop taken directly from the original PDF.
-          ext=os.path.splitext(href)[1].lower(); im=Image.open(crop)
-          b=io.BytesIO()
-          if ext in ('.jpg','.jpeg'):
-              im.convert('RGB').save(b,'JPEG',quality=98,subsampling=0)
+          ext=os.path.splitext(href)[1].lower(); im=Image.open(crop); b=io.BytesIO()
+          if ext in ('.jpg','.jpeg'): im.convert('RGB').save(b,'JPEG',quality=98,subsampling=0)
           elif ext=='.bmp': im.convert('RGB').save(b,'BMP')
           else: im.save(b,'PNG')
           old=len(data[href]); data[href]=b.getvalue()
           print('GRAPH_REPLACED',ref,href,old,len(data[href]))
 
-          # Create blank paragraphs based on an existing choice-row paragraph.
           def blank_like(p):
               q=etree.Element(p.tag,attrib=dict(p.attrib))
               run=next((c for c in p if ln(c)=='run'),None)
