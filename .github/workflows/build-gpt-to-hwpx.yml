@@ -1,4 +1,4 @@
-name: Build GPT to HWPX V3 Windows EXE
+name: Build GPT to HWPX V3.1 Windows EXE
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Reconstruct V3 source and template
+      - name: Reconstruct and patch V3.1 source
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path 'gpt_to_hwpx_v3' | Out-Null
@@ -28,12 +28,24 @@ jobs:
           Set-Content -Path 'gpt_to_hwpx_v3/source.py.gz.b64' -Value $src64 -Encoding ascii -NoNewline
           python -c "import base64,gzip,pathlib; p=pathlib.Path('gpt_to_hwpx_v3/source.py.gz.b64'); pathlib.Path('gpt_to_hwpx_v3/gpt_to_hwpx_v3.py').write_bytes(gzip.decompress(base64.b64decode(p.read_text())))"
 
+          Set-Content -Path 'gpt_to_hwpx_v3/patch_no_box.py' -Encoding utf8 -Value @'
+          from pathlib import Path
+          p=Path('gpt_to_hwpx_v3/gpt_to_hwpx_v3.py')
+          s=p.read_text(encoding='utf-8')
+          old="lambda cmd,a: 'box {'+latex_to_hwp(a[0])+'}')"
+          new="lambda cmd,a: latex_to_hwp(a[0]))"
+          if old not in s:
+              raise SystemExit('boxed conversion pattern not found')
+          p.write_text(s.replace(old,new),encoding='utf-8')
+          '@
+          python gpt_to_hwpx_v3/patch_no_box.py
+
           $tpl = ''
           Get-ChildItem 'gpt_to_hwpx_build/template_*.b64' | Sort-Object Name | ForEach-Object { $tpl += Get-Content $_.FullName -Raw }
           [IO.File]::WriteAllBytes('gpt_to_hwpx_v3/direct_hwpx_template.hwpx', [Convert]::FromBase64String($tpl))
 
           $sha = (Get-FileHash 'gpt_to_hwpx_v3/gpt_to_hwpx_v3.py' -Algorithm SHA256).Hash.ToLower()
-          if ($sha -ne '466df3a146340b92b65696834d36876985dee19c7245273ebe29dc4546227dde') { throw "V3 source SHA mismatch: $sha" }
+          if ($sha -ne '57c4f5693b45300e76c48f0f381a5957674e114b67dc010f661d55ac77e00a5d') { throw "V3.1 source SHA mismatch: $sha" }
 
       - name: Install PyInstaller
         run: python -m pip install --upgrade pyinstaller
@@ -141,7 +153,7 @@ jobs:
           `B`가 가장 많이 받고 `A\ge2`이므로 전체 개수 분배가 위 8개로 제한됩니다. 각 분배에서 흰 공 4개의 배분만 세어 합하면 `\boxed{55}`입니다.
           '@
 
-          Set-Content -Path 'gpt_to_hwpx_v3/check_v3.py' -Encoding utf8 -Value @'
+          Set-Content -Path 'gpt_to_hwpx_v3/check_v31.py' -Encoding utf8 -Value @'
           import sys, zipfile, xml.etree.ElementTree as E
           path=sys.argv[1]
           ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}
@@ -150,52 +162,53 @@ jobs:
           scripts=[(x.text or '') for x in root.findall('.//hp:equation/hp:script',ns)]
           assert len(scripts)>=20, scripts
           assert not any('\\' in x for x in scripts), scripts
-          assert any('box {55}' in x for x in scripts), scripts
+          assert not any('box {' in x for x in scripts), scripts
+          assert sum(1 for x in scripts if x.strip().rstrip('.')=='55') >= 3, scripts
           assert any(x.startswith('matrix{') for x in scripts), scripts
           assert any('"경우의 수"' in x for x in scripts), scripts
           assert any('0 <= x <= a' in x for x in scripts), scripts
           bad=('begin{array}','end{array}','boxed','text{','\\ge','\\le','```')
           assert not any(any(b in x for b in bad) for x in scripts), scripts
-          print('V3 exact-sample regression OK:',len(scripts))
+          print('V3.1 no-box regression OK:',len(scripts))
           '@
 
-      - name: Smoke test Python V3 converter
+      - name: Smoke test Python V3.1 converter
         shell: pwsh
         run: |
           python gpt_to_hwpx_v3/gpt_to_hwpx_v3.py --cli gpt_to_hwpx_v3/exact_sample.md gpt_to_hwpx_v3/smoke.hwpx
-          if ($LASTEXITCODE -ne 0) { throw "Python V3 converter exited with $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "Python V3.1 converter exited with $LASTEXITCODE" }
           python -m zipfile -t gpt_to_hwpx_v3/smoke.hwpx
-          if ($LASTEXITCODE -ne 0) { throw 'Python V3 HWPX ZIP integrity check failed' }
-          python gpt_to_hwpx_v3/check_v3.py gpt_to_hwpx_v3/smoke.hwpx
-          if ($LASTEXITCODE -ne 0) { throw 'Python V3 exact-sample regression failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'Python V3.1 HWPX ZIP integrity check failed' }
+          python gpt_to_hwpx_v3/check_v31.py gpt_to_hwpx_v3/smoke.hwpx
+          if ($LASTEXITCODE -ne 0) { throw 'Python V3.1 no-box regression failed' }
 
-      - name: Build single V3 EXE
+      - name: Build single V3.1 EXE
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean --onefile --windowed `
-            --name GPT_to_HWPX_V3 `
+            --name GPT_to_HWPX_V3_1 `
             --add-data 'gpt_to_hwpx_v3/direct_hwpx_template.hwpx;.' `
             gpt_to_hwpx_v3/gpt_to_hwpx_v3.py
 
-      - name: Smoke test V3 EXE converter
+      - name: Smoke test V3.1 EXE converter
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath '.\dist\GPT_to_HWPX_V3.exe' `
+          $p = Start-Process -FilePath '.\dist\GPT_to_HWPX_V3_1.exe' `
             -ArgumentList @('--cli', 'gpt_to_hwpx_v3/exact_sample.md', 'gpt_to_hwpx_v3/smoke_exe.hwpx') `
             -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "V3 EXE converter exited with $($p.ExitCode)" }
-          if (!(Test-Path 'gpt_to_hwpx_v3/smoke_exe.hwpx')) { throw 'V3 EXE smoke test failed: HWPX not created' }
+          if ($p.ExitCode -ne 0) { throw "V3.1 EXE converter exited with $($p.ExitCode)" }
+          if (!(Test-Path 'gpt_to_hwpx_v3/smoke_exe.hwpx')) { throw 'V3.1 EXE smoke test failed: HWPX not created' }
           python -m zipfile -t gpt_to_hwpx_v3/smoke_exe.hwpx
-          if ($LASTEXITCODE -ne 0) { throw 'V3 EXE HWPX ZIP integrity check failed' }
-          python gpt_to_hwpx_v3/check_v3.py gpt_to_hwpx_v3/smoke_exe.hwpx
-          if ($LASTEXITCODE -ne 0) { throw 'V3 EXE exact-sample regression failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'V3.1 EXE HWPX ZIP integrity check failed' }
+          python gpt_to_hwpx_v3/check_v31.py gpt_to_hwpx_v3/smoke_exe.hwpx
+          if ($LASTEXITCODE -ne 0) { throw 'V3.1 EXE no-box regression failed' }
 
-      - name: Upload Windows V3 EXE and sample
+      - name: Upload Windows V3.1 EXE and sample
         uses: actions/upload-artifact@v4
         with:
-          name: GPT_to_HWPX_V3_Windows
+          name: GPT_to_HWPX_V3_1_Windows
           path: |
-            dist/GPT_to_HWPX_V3.exe
+            dist/GPT_to_HWPX_V3_1.exe
             gpt_to_hwpx_v3/smoke_exe.hwpx
           if-no-files-found: error
           retention-days: 7
