@@ -7,6 +7,14 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+try:
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+    if hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(encoding='utf-8')
+except Exception:
+    pass
+
 import app
 
 CF_UNICODETEXT = 13
@@ -63,15 +71,9 @@ def _candidate_answer(s: str) -> bool:
 
 
 def normalize_answer_first(raw: str) -> tuple[str, str]:
-    """Return (normalized_text, answer).
-
-    Contract: output always starts with exactly one '[정답] 실제정답' line,
-    followed by exactly one '[해설]' line.  Existing math/TikZ tags remain intact.
-    """
     text = raw.replace('\r\n', '\n').replace('\r', '\n').strip()
     answer = ''
 
-    # 1) Dedicated ANSWER tag has the highest priority.
     tagged = re.findall(r'\[\[ANSWER\]\](.*?)\[\[/ANSWER\]\]', text, flags=re.S | re.I)
     for item in tagged:
         val = ' '.join(x.strip() for x in item.splitlines() if x.strip())
@@ -84,9 +86,6 @@ def normalize_answer_first(raw: str) -> tuple[str, str]:
     i = 0
     while i < len(lines):
         line = lines[i]
-        st = line.strip()
-
-        # Same-line form: [정답] 47
         m = re.match(r'^\s*\[정답\]\s*(.*?)\s*$', line)
         if m:
             val = m.group(1).strip()
@@ -94,9 +93,6 @@ def normalize_answer_first(raw: str) -> tuple[str, str]:
                 answer = answer or val
                 i += 1
                 continue
-
-            # Empty [정답] line.  Capture the following short value only when
-            # it occurs before a real explanation header.
             j = i + 1
             while j < len(lines) and not lines[j].strip():
                 j += 1
@@ -106,21 +102,17 @@ def normalize_answer_first(raw: str) -> tuple[str, str]:
                 continue
             i += 1
             continue
-
         kept.append(line)
         i += 1
 
     text = '\n'.join(kept)
 
-    # 2) Repair the malformed pattern seen in the current output/input:
-    #    [해설] / 30번 / [해설]  -> answer=30번, body starts after second [해설].
     if not answer:
         m = re.search(r'(?ms)^\s*\[해설\]\s*\n\s*([^\n]+?)\s*\n\s*\[해설\]\s*$', text)
         if m and _candidate_answer(m.group(1)):
             answer = m.group(1).strip()
             text = text[:m.start()] + '\n[해설]\n' + text[m.end():]
 
-    # 3) Last-resort answer patterns used by ordinary ChatGPT prose.
     if not answer:
         m = re.search(r'(?im)^\s*정답\s*(?:은|:|：)?\s*`?([^`\n]{1,50})`?\s*$', text)
         if m and _candidate_answer(m.group(1)):
@@ -134,9 +126,7 @@ def normalize_answer_first(raw: str) -> tuple[str, str]:
     if not answer:
         answer = '정답 확인 필요'
 
-    # Remove all standalone explanation headers.  We add exactly one ourselves.
     text = re.sub(r'(?im)^\s*\[해설\]\s*$', '', text)
-    # Remove accidental empty standalone answer headers that survived unusual spacing.
     text = re.sub(r'(?im)^\s*\[정답\]\s*$', '', text)
     text = re.sub(r'\n{3,}', '\n\n', text).strip()
 
@@ -190,7 +180,6 @@ def main(argv: list[str]) -> int:
             message('ChatGPT 응답을 먼저 복사(Ctrl+C)한 뒤 다시 실행해주세요.', True)
             return 2
         out = run_conversion(raw, output_dir, open_after=not no_open)
-        # Normal one-click mode stays silent on success: double-click -> document opens.
         if test_input:
             print(out)
         return 0
