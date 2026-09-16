@@ -1,0 +1,215 @@
+name: Build GPT HWPX Geometry Roman Fix
+
+on:
+  push:
+    branches: [gpt-to-hwpx-build]
+    paths:
+      - '.github/workflows/build-gpt-to-hwpx-geometry-roman.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download verified robust fraction EXE
+        uses: actions/download-artifact@v4
+        with:
+          name: GPT_HWPX_RobustFraction_Windows
+          path: prev
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 35074326409
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pyinstaller
+
+      - name: Create geometry roman wrapper
+        shell: pwsh
+        run: |
+          $inner=(Get-ChildItem 'prev' -Recurse -Filter 'GPT_HWPX_원클릭_분수정밀보정.exe' | Select-Object -First 1).FullName
+          if(-not $inner){ throw 'previous verified EXE not found' }
+          New-Item -ItemType Directory -Force -Path app | Out-Null
+          Copy-Item $inner 'app/GPT_HWPX_원클릭_분수정밀보정.exe' -Force
+
+          Set-Content 'app/wrapper.py' -Encoding utf8 -Value @'
+          import ctypes, os, re, subprocess, sys, tempfile, time
+          from pathlib import Path
+
+          CF_UNICODETEXT=13
+          GMEM_MOVEABLE=0x0002
+          CREATE_NO_WINDOW=0x08000000
+          u=ctypes.windll.user32
+          k=ctypes.windll.kernel32
+          u.OpenClipboard.argtypes=[ctypes.c_void_p]; u.OpenClipboard.restype=ctypes.c_bool
+          u.CloseClipboard.argtypes=[]; u.CloseClipboard.restype=ctypes.c_bool
+          u.EmptyClipboard.argtypes=[]; u.EmptyClipboard.restype=ctypes.c_bool
+          u.GetClipboardData.argtypes=[ctypes.c_uint]; u.GetClipboardData.restype=ctypes.c_void_p
+          u.SetClipboardData.argtypes=[ctypes.c_uint,ctypes.c_void_p]; u.SetClipboardData.restype=ctypes.c_void_p
+          k.GlobalAlloc.argtypes=[ctypes.c_uint,ctypes.c_size_t]; k.GlobalAlloc.restype=ctypes.c_void_p
+          k.GlobalLock.argtypes=[ctypes.c_void_p]; k.GlobalLock.restype=ctypes.c_void_p
+          k.GlobalUnlock.argtypes=[ctypes.c_void_p]; k.GlobalUnlock.restype=ctypes.c_bool
+
+          def msg(t):u.MessageBoxW(None,t,'GPT → HWPX',0x10)
+          def resource(n):return Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/n
+
+          def get_clipboard():
+              for _ in range(15):
+                  if u.OpenClipboard(None):
+                      try:
+                          h=u.GetClipboardData(CF_UNICODETEXT)
+                          if not h:return ''
+                          p=k.GlobalLock(h)
+                          if not p:return ''
+                          try:return ctypes.wstring_at(p)
+                          finally:k.GlobalUnlock(h)
+                      finally:u.CloseClipboard()
+                  time.sleep(.05)
+              return ''
+
+          def set_clipboard(text):
+              data=text.encode('utf-16-le')+b'\x00\x00'
+              if not u.OpenClipboard(None):raise RuntimeError('클립보드를 열 수 없습니다.')
+              try:
+                  u.EmptyClipboard()
+                  h=k.GlobalAlloc(GMEM_MOVEABLE,len(data))
+                  if not h:raise RuntimeError('클립보드 메모리 할당 실패')
+                  p=k.GlobalLock(h); ctypes.memmove(p,data,len(data)); k.GlobalUnlock(h)
+                  if not u.SetClipboardData(CF_UNICODETEXT,h):raise RuntimeError('클립보드 쓰기 실패')
+              finally:u.CloseClipboard()
+
+          def romanize_math_content(s):
+              # Preserve already-explicit roman text first.
+              saved=[]
+              def protect(m):
+                  saved.append(m.group(0)); return f'@@ROMAN{len(saved)-1}@@'
+              s=re.sub(r'\\mathrm\s*\{[^{}]*\}',protect,s)
+              # Geometric names made of two or more capital Latin letters: FPQ, FP, PQ, QF, ABCD...
+              s=re.sub(r'(?<![A-Za-z0-9@])([A-Z]{2,})(?![A-Za-z0-9])',r'\\mathrm{\1}',s)
+              for i,v in enumerate(saved):s=s.replace(f'@@ROMAN{i}@@',v)
+              return s
+
+          def normalize_geometry_roman(text):
+              # Math fences.
+              text=re.sub(r'```math\s*\n(.*?)\n```',lambda m:'```math\n'+romanize_math_content(m.group(1))+'\n```',text,flags=re.S|re.I)
+              text=re.sub(r'\$\$(.*?)\$\$',lambda m:'$$'+romanize_math_content(m.group(1))+'$$',text,flags=re.S)
+              text=re.sub(r'\\\[(.*?)\\\]',lambda m:r'\['+romanize_math_content(m.group(1))+r'\]',text,flags=re.S)
+              text=re.sub(r'\\\((.*?)\\\)',lambda m:r'\('+romanize_math_content(m.group(1))+r'\)',text,flags=re.S)
+              # Inline backtick math used by ChatGPT.
+              text=re.sub(r'`([^`\n]+)`',lambda m:'`'+romanize_math_content(m.group(1))+'`',text)
+
+              # Single point labels need prose context to distinguish them from functions/variables.
+              geom=r'(점|삼각형|사각형|오각형|육각형|선분|직선|반직선|원)'
+              def prose_geom(m):
+                  noun=m.group(1); label=m.group(2)
+                  return noun+' `\\mathrm{'+label+'}`'
+              text=re.sub(geom+r'\s+`?([A-Z]{1,6})`?',prose_geom,text)
+              return text
+
+          def run_inner_with_file(text,args):
+              inner=resource('GPT_HWPX_원클릭_분수정밀보정.exe')
+              if not inner.exists():raise RuntimeError('내부 변환기를 찾지 못했습니다.')
+              with tempfile.TemporaryDirectory(prefix='gpt_geomroman_') as td:
+                  f=Path(td)/'normalized.md'; f.write_text(normalize_geometry_roman(text),encoding='utf-8')
+                  cmd=[str(inner),'--test-input',str(f)]; cmd.extend(args)
+                  return subprocess.run(cmd,creationflags=CREATE_NO_WINDOW,timeout=180).returncode
+
+          def main():
+              a=sys.argv[1:]; test=None; passthrough=[]; i=0
+              while i<len(a):
+                  if a[i]=='--test-input' and i+1<len(a):test=Path(a[i+1]);i+=2;continue
+                  passthrough.append(a[i]);i+=1
+              try:
+                  inner=resource('GPT_HWPX_원클릭_분수정밀보정.exe')
+                  if test is not None:
+                      return run_inner_with_file(test.read_text(encoding='utf-8-sig'),passthrough)
+                  original=get_clipboard()
+                  if not original.strip():msg('ChatGPT 답변을 먼저 복사(Ctrl+C)한 뒤 다시 실행해주세요.');return 2
+                  normalized=normalize_geometry_roman(original);set_clipboard(normalized)
+                  try:
+                      si=subprocess.STARTUPINFO();si.dwFlags|=subprocess.STARTF_USESHOWWINDOW
+                      return subprocess.run([str(inner)],startupinfo=si,creationflags=CREATE_NO_WINDOW,timeout=180).returncode
+                  finally:
+                      try:set_clipboard(original)
+                      except:pass
+              except Exception as e:msg(str(e));return 1
+
+          if __name__=='__main__':raise SystemExit(main())
+          '@
+
+          Set-Content 'app/sample.md' -Encoding utf8 -Value @'
+          정답은 `\boxed{10}`입니다.
+
+          [해설]
+          따라서 삼각형 `FPQ`의 둘레는
+
+          $$
+          FP+PQ+QF
+          $$
+
+          이고 `PQ=PF`이므로
+
+          $$
+          FP+PQ+QF=PF+PF+QF=10+QF
+          $$
+
+          이다. 즉, 점 Q는 원 위에 있다.
+
+          함수 계산은
+
+          $$
+          b=G(2)=\frac83+2
+          $$
+
+          이다.
+          '@
+
+          Set-Content 'app/check.py' -Encoding utf8 -Value @'
+          import sys,zipfile,xml.etree.ElementTree as E
+          ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}
+          with zipfile.ZipFile(sys.argv[1]) as z:root=E.fromstring(z.read('Contents/section0.xml'))
+          scripts=[x.text or '' for x in root.findall('.//hp:equation/hp:script',ns)]
+          joined='\n'.join(scripts)
+          for token in ['rm FPQ it','rm FP it','rm PQ it','rm QF it','rm Q it']:
+              assert token in joined,(token,scripts)
+          assert 'rm G it' not in joined,scripts
+          assert '{8} over {3}' in joined,scripts
+          assert 'frac' not in joined.lower(),scripts
+          print('GEOMETRY ROMAN + PREVIOUS FIXES OK')
+          print(scripts)
+          '@
+
+      - name: Build geometry roman EXE
+        shell: pwsh
+        run: |
+          $inner=(Resolve-Path 'app/GPT_HWPX_원클릭_분수정밀보정.exe').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name GPT_HWPX_원클릭_기하로마체 `
+            --distpath dist --workpath build `
+            --add-binary "$inner;." app/wrapper.py
+
+      - name: End-to-end test
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $p=Start-Process '.\dist\GPT_HWPX_원클릭_기하로마체.exe' -ArgumentList @('--test-input','app/sample.md','--output-dir','out','--no-open') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "wrapper exit $($p.ExitCode)"}
+          $o=Get-ChildItem 'out\*.hwpx'|Sort-Object LastWriteTime -Descending|Select-Object -First 1
+          if($null -eq $o){throw 'HWPX not created'}
+          python -m zipfile -t $o.FullName
+          python app/check.py $o.FullName
+          if($LASTEXITCODE -ne 0){throw 'geometry roman regression failed'}
+          Copy-Item $o.FullName 'out/GPT_HWPX_기하로마체_테스트.hwpx' -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_GeometryRoman_Windows
+          path: |
+            dist/GPT_HWPX_원클릭_기하로마체.exe
+            out/GPT_HWPX_기하로마체_테스트.hwpx
+          if-no-files-found: error
+          retention-days: 7
