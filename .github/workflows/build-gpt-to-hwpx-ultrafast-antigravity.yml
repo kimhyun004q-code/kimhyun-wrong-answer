@@ -1,0 +1,95 @@
+name: Build GPT HWPX UltraFast Antigravity Compat
+
+on:
+  push:
+    branches: [gpt-to-hwpx-build]
+    paths:
+      - '.github/workflows/build-gpt-to-hwpx-ultrafast-antigravity.yml'
+      - 'gpt_hwpx_antigravity_patch.py'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Restore ultrafast sources and template
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path app | Out-Null
+          python -c "import base64,gzip,pathlib; p=pathlib.Path; p('app/ultrafast_app.py').write_bytes(gzip.decompress(base64.b64decode(p('gpt_hwpx_ultrafast_fixed/app.gz.b64').read_bytes()))); p('app/ultrafast_core.py').write_bytes(gzip.decompress(base64.b64decode(p('gpt_hwpx_ultrafast_fixed/core.gz.b64').read_bytes()))); p('app/ultrafast_tikz.py').write_bytes(gzip.decompress(base64.b64decode(p('gpt_hwpx_ultrafast_fixed/tikz.gz.b64').read_bytes())))"
+          python -c "import base64,pathlib; p=pathlib.Path; parts=sorted(p('gpt_to_hwpx_build').glob('template_*.b64')); p('app/direct_hwpx_template.hwpx').write_bytes(base64.b64decode(''.join(x.read_text().strip() for x in parts)))"
+
+      - name: Apply current fixes plus Antigravity compatibility rules
+        run: |
+          python gpt_hwpx_antigravity_patch.py
+          python -m py_compile app/ultrafast_app.py app/ultrafast_core.py app/ultrafast_tikz.py
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pyinstaller pymupdf
+
+      - name: Equation regression test
+        shell: pwsh
+        run: |
+          Set-Content app/sample.txt -Encoding utf8 -Value @'
+          [정답] ① -4
+          [해설]
+          여기서
+          $17^2 = 289 < 300 = (10\sqrt{3})^2 < 324 = 18^2$
+          이므로
+          $17 < 10\sqrt3 < 18$
+          $\sqrt{3}^2$, $(\sqrt{5}+1)^2$, $\sqrt[3]x$
+          $-2 \le x \le \frac{3}{2}$
+          점 $A$, 선분 $AB$, 삼각형 $ABC$를 생각한다.
+          $\overline{\mathrm{AB}}^2$, $\overrightarrow{AB}$, $\overleftrightarrow{CD}$, $\wideparen{AB}$
+          $\triangle ABC$, $\square ABCD$, $\binom{n}{r}$
+          '@
+          New-Item -ItemType Directory -Force -Path outsrc | Out-Null
+          Push-Location app
+          python ultrafast_app.py --test-input sample.txt --output-dir ../outsrc --no-open --validate
+          Pop-Location
+          python -c "import zipfile,xml.etree.ElementTree as E,pathlib; p=next(pathlib.Path('outsrc').glob('*.hwpx')); z=zipfile.ZipFile(p); r=E.fromstring(z.read('Contents/section0.xml')); ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}; scripts=[x.text or '' for x in r.findall('.//hp:script',ns)]; j='\\n'.join(scripts); assert '(10 sqrt {3} )^{2}' in j,j; assert '10sqrt' not in j,j; assert 'sqrt {3} ^{2}' in j,j; assert 'root {3} of {x}' in j,j; assert '{}_{n} rm C _{r}' in j,j; assert '{bar {rm AB it}}^{2}' in j,j; assert 'vec {rm AB it}' in j,j; assert 'dyad {rm CD it}' in j,j; assert 'arch {rm AB it}' in j,j; assert 'TRIANGLE rm ABC it' in j,j; assert '□ rm ABCD it' in j,j; assert '~<~' in j and '~=~' in j and '~LEQ~' in j,j; print('ANTIGRAVITY COMPAT REGRESSION OK')"
+
+      - name: Build EXEs
+        shell: pwsh
+        run: |
+          $tpl=(Resolve-Path 'app/direct_hwpx_template.hwpx').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_HWPX_초고속_안티그래비티통합 --distpath dist_onefile --workpath build_onefile --add-data "$tpl;." app/ultrafast_app.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name GPT_HWPX_초고속_FAST_안티그래비티통합 --distpath dist_fast --workpath build_fast --add-data "$tpl;." app/ultrafast_app.py
+
+      - name: EXE smoke and end-to-end test
+        shell: pwsh
+        run: |
+          Set-Clipboard -Value '[해설] $17^2=289<300=(10\sqrt{3})^2<324=18^2$'
+          $p=Start-Process '.\dist_fast\GPT_HWPX_초고속_FAST_안티그래비티통합\GPT_HWPX_초고속_FAST_안티그래비티통합.exe' -ArgumentList @('--no-open') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "FAST smoke failed: $($p.ExitCode)"}
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $p=Start-Process '.\dist_onefile\GPT_HWPX_초고속_안티그래비티통합.exe' -ArgumentList @('--test-input','app/sample.txt','--output-dir','out','--no-open','--validate') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "onefile exit $($p.ExitCode)"}
+          $o=Get-ChildItem 'out\*.hwpx'|Select-Object -First 1
+          Copy-Item $o.FullName 'out/GPT_HWPX_안티그래비티통합_테스트.hwpx' -Force
+
+      - name: Package source snapshot
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path source_snapshot | Out-Null
+          Copy-Item app/ultrafast_app.py,app/ultrafast_core.py,app/ultrafast_tikz.py,app/direct_hwpx_template.hwpx source_snapshot/
+          Copy-Item gpt_hwpx_antigravity_patch.py source_snapshot/
+          Compress-Archive -Path source_snapshot/* -DestinationPath GPT_HWPX_안티그래비티통합_소스.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_UltraFast_AntigravityCompat_Windows
+          path: |
+            dist_onefile/GPT_HWPX_초고속_안티그래비티통합.exe
+            dist_fast/GPT_HWPX_초고속_FAST_안티그래비티통합/**
+            out/GPT_HWPX_안티그래비티통합_테스트.hwpx
+            GPT_HWPX_안티그래비티통합_소스.zip
+          if-no-files-found: error
+          retention-days: 7
