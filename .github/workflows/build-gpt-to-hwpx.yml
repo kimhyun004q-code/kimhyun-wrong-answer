@@ -142,14 +142,11 @@ jobs:
               return folder/f'GPT해설_{s}_{os.getpid()}.hwpx'
 
           def clean_section(xml_text):
-              # Hancom equation syntax does not need literal LEFT/RIGHT tokens here.
               def clean_script(m):
-                  body=re.sub(r'(?i)\b(?:LEFT|RIGHT)\b\s*','',m.group(2))
+                  body=re.sub(r'(?i)(?:LEFT|RIGHT)\s*','',m.group(2))
                   return m.group(1)+body+m.group(3)
               xml_text=re.sub(r'(<hp:script>)(.*?)(</hp:script>)',clean_script,xml_text,flags=re.S)
 
-              # Remove paragraphs whose only content is whitespace. These were
-              # responsible for the large vertical gaps between copied blocks.
               spacer=re.compile(
                   r'<hp:p\b[^>]*>\s*<hp:run\b[^>]*>\s*'
                   r'(?:<hp:t\b[^>]*/>|<hp:t\b[^>]*>\s*</hp:t>)\s*'
@@ -222,7 +219,7 @@ jobs:
               root=E.fromstring(sec.encode('utf-8'))
           scripts=[x.text or '' for x in root.findall('.//hp:equation/hp:script',ns)]
           assert scripts, 'no equations'
-          assert not any(re.search(r'(?i)\b(?:LEFT|RIGHT)\b',s) for s in scripts),scripts
+          assert not any('LEFT' in s.upper() or 'RIGHT' in s.upper() for s in scripts),scripts
           assert any('13' in s and '12' in s and '(' in s and ')' in s for s in scripts),scripts
           spacer=re.compile(r'<hp:p\b[^>]*>\s*<hp:run\b[^>]*>\s*(?:<hp:t\b[^>]*/>|<hp:t\b[^>]*>\s*</hp:t>)\s*</hp:run>\s*</hp:p>',re.S)
           assert not spacer.search(sec), 'blank spacer paragraph remains'
