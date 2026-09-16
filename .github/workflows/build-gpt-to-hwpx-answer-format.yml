@@ -139,13 +139,22 @@ jobs:
               head='[정답]'+((' '+answer_display(ans)) if ans else '')
               return head+'\n\n[해설]\n'+body
 
+          def normalize_scripts(body):
+              body=re.sub(r'(?i)(?:LEFT|RIGHT)\s*','',body)
+              # Hancom can let an unbraced sub/superscript absorb the following token.
+              # Force a one-token scope for common single-character scripts.
+              body=re.sub(r'_(?!\{)([A-Za-z0-9])',r'_{\1}',body)
+              body=re.sub(r'\^(?!\{)([A-Za-z0-9])',r'^{\1}',body)
+              return body
+
           def clean_section(xml_text):
               def clean_script(m):
-                  body=re.sub(r'(?i)(?:LEFT|RIGHT)\s*','',m.group(2))
+                  body=normalize_scripts(m.group(2))
                   return m.group(1)+body+m.group(3)
               xml_text=re.sub(r'(<hp:script>)(.*?)(</hp:script>)',clean_script,xml_text,flags=re.S)
               spacer=re.compile(r'<hp:p\b[^>]*>\s*<hp:run\b[^>]*>\s*(?:<hp:t\b[^>]*/>|<hp:t\b[^>]*>\s*</hp:t>)\s*</hp:run>\s*</hp:p>',re.S)
               return spacer.sub('',xml_text)
+
           def postprocess(path):
               with zipfile.ZipFile(path,'r') as zin:items=[(i,zin.read(i.filename)) for i in zin.infolist()]
               tmp=path.with_suffix('.tmp.hwpx')
@@ -155,6 +164,7 @@ jobs:
                           data=clean_section(data.decode('utf-8')).encode('utf-8')
                       zout.writestr(info,data)
               os.replace(tmp,path)
+
           def convert(text,out):
               exe=resource('GPT_to_HWPX_core.exe')
               with tempfile.TemporaryDirectory(prefix='gpt_hwpx_') as td:
@@ -163,6 +173,7 @@ jobs:
                   r=subprocess.run([str(exe),'--cli',str(f),str(out)],startupinfo=si,creationflags=CREATE_NO_WINDOW,timeout=120)
                   if r.returncode or not out.exists():raise RuntimeError('HWPX 변환에 실패했습니다.')
               postprocess(out)
+
           def main():
               a=sys.argv[1:];test=None;od=None;noopen=False;i=0
               while i<len(a):
@@ -182,52 +193,65 @@ jobs:
           '@
 
           Set-Content 'app/sample.md' -Encoding utf8 -Value @'
-          정답은 `\boxed{55}`가지입니다.
+          정답은 `\boxed{47}`입니다.
 
-          흰 공끼리, 검은 공끼리는 서로 구별하지 않으므로 전체 공의 개수를 먼저 정리합니다.
-
-          $$
-          a+b+c=8
-          $$
-
-          따라서 계산하면 됩니다.
+          ㄱ. 급수
 
           $$
-          \boxed{55}
+          \sum_{n=1}^{\infty} a_n b_n
           $$
+
+          이 수렴하므로
+
+          $$
+          \lim_{n\to\infty} a_n b_n=0
+          $$
+
+          이다.
           '@
 
           Set-Content 'app/check.py' -Encoding utf8 -Value @'
-          import sys,zipfile,xml.etree.ElementTree as E
+          import re,sys,zipfile,xml.etree.ElementTree as E
           ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}
           with zipfile.ZipFile(sys.argv[1]) as z:root=E.fromstring(z.read('Contents/section0.xml'))
           txt=''.join((x.text or '') for x in root.findall('.//hp:t',ns))
-          assert txt.startswith('[정답] 55'),repr(txt[:100])
+          scripts=[x.text or '' for x in root.findall('.//hp:equation/hp:script',ns)]
+          assert txt.startswith('[정답] 47'),repr(txt[:100])
           assert '[해설]' in txt[:120],repr(txt[:150])
-          assert '정답은' not in txt[:150],repr(txt[:150])
-          print('ANSWER FIRST OK')
+          assert scripts, 'no equations'
+          joined='\n'.join(scripts)
+          assert joined.count('a_{n}')>=2,repr(scripts)
+          assert joined.count('b_{n}')>=2,repr(scripts)
+          assert not re.search(r'(?<!\{)_[A-Za-z0-9]',joined),repr(scripts)
+          assert 'LEFT' not in joined.upper() and 'RIGHT' not in joined.upper(),repr(scripts)
+          print('ANSWER FIRST + SCRIPT SCOPE OK')
+          print(scripts)
           '@
 
       - name: Build one-click EXE
         shell: pwsh
         run: |
           $core=(Resolve-Path 'dist_core/GPT_to_HWPX_core.exe').Path
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_HWPX_원클릭_정답해설 --distpath dist_app --workpath build_app --add-binary "$core;." app/launcher.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_HWPX_원클릭_첨자수정 --distpath dist_app --workpath build_app --add-binary "$core;." app/launcher.py
 
       - name: End-to-end test
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path out | Out-Null
-          $p=Start-Process '.\dist_app\GPT_HWPX_원클릭_정답해설.exe' -ArgumentList @('--test-input','app/sample.md','--output-dir','out','--no-open') -Wait -PassThru
+          $p=Start-Process '.\dist_app\GPT_HWPX_원클릭_첨자수정.exe' -ArgumentList @('--test-input','app/sample.md','--output-dir','out','--no-open') -Wait -PassThru
           if($p.ExitCode -ne 0){throw "app exit $($p.ExitCode)"}
           $o=Get-ChildItem out\*.hwpx|Select-Object -First 1
+          python -m zipfile -t $o.FullName
+          if($LASTEXITCODE -ne 0){throw 'HWPX ZIP check failed'}
           python app/check.py $o.FullName
+          if($LASTEXITCODE -ne 0){throw 'subscript regression failed'}
+          Copy-Item $o.FullName 'out/GPT_HWPX_첨자수정_테스트.hwpx' -Force
 
       - uses: actions/upload-artifact@v4
         with:
-          name: GPT_HWPX_AnswerFirst_Windows
+          name: GPT_HWPX_SubscriptFix_Windows
           path: |
-            dist_app/GPT_HWPX_원클릭_정답해설.exe
-            out/*.hwpx
+            dist_app/GPT_HWPX_원클릭_첨자수정.exe
+            out/GPT_HWPX_첨자수정_테스트.hwpx
           if-no-files-found: error
           retention-days: 7
