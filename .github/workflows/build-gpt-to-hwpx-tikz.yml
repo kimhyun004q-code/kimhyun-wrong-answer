@@ -1,0 +1,176 @@
+name: Build GPT HWPX TikZ Tagged Math GUI
+
+on:
+  push:
+    branches: [gpt-to-hwpx-build]
+    paths:
+      - 'gpt_hwpx_tikz/app.py'
+      - '.github/workflows/build-gpt-to-hwpx-tikz.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download current verified HWPX core
+        uses: actions/download-artifact@v4
+        with:
+          name: GPT_HWPX_GeometrySymbols_Windows
+          path: prev
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 35077164531
+
+      - name: Prepare verified core EXE
+        shell: pwsh
+        run: |
+          $inner=(Get-ChildItem 'prev' -Recurse -Filter 'GPT_HWPX_원클릭_기하기호보정.exe' | Select-Object -First 1).FullName
+          if(-not $inner){ throw 'verified geometry-symbol core EXE not found' }
+          Copy-Item $inner 'gpt_hwpx_tikz/GPT_HWPX_원클릭_기하기호보정.exe' -Force
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pyinstaller pymupdf pillow
+
+      - name: Create regression fixtures
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path regression | Out-Null
+          Set-Content 'regression/tagged_sample.txt' -Encoding utf8 -Value @'
+          [해설]
+          타원의 방정식은
+          [[DISPLAY_EQ]]
+          \frac{x^2}{25}+\frac{y^2}{16}=1
+          [[/DISPLAY_EQ]]
+          이다.
+
+          설명 중 [[INLINE_EQ]]x^2+y^2=1[[/INLINE_EQ]] 을 사용한다.
+
+          다음 그림을 이용한다.
+          [[TIKZ]]
+          \begin{tikzpicture}
+          \draw (0,0)--(2,0)--(1,1.5)--cycle;
+          \node at (0,0) [below] {$A$};
+          \node at (2,0) [below] {$B$};
+          \node at (1,1.5) [above] {$C$};
+          \end{tikzpicture}
+          [[/TIKZ]]
+
+          따라서 결론을 얻는다.
+          [[ANSWER]]
+          ⑤
+          [[/ANSWER]]
+          '@
+
+          Set-Content 'regression/math_only.txt' -Encoding utf8 -Value @'
+          [정답] ⑤
+          [해설]
+          각의 크기는
+          $$
+          \angle DAC=90^\circ
+          $$
+          이고 수직 관계는
+          $$
+          AC\perp \mathrm{PAB}
+          $$
+          이다.
+          '@
+
+      - name: Test tag parser
+        shell: pwsh
+        run: |
+          python -c "import sys;sys.path.insert(0,'gpt_hwpx_tikz');import app;p,b=app.preprocess_tags(open('regression/tagged_sample.txt',encoding='utf-8-sig').read());assert len(b)==1;assert '[[TIKZ]]' not in p;assert 'GPTTIKZPLACE0001END' in p;assert '$$' in p;assert '$x^2+y^2=1$' in p;assert '[정답] ⑤' in p;print('TAG PARSER OK')"
+
+      - name: Test existing math core unchanged
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path regression/coreout | Out-Null
+          $p=Start-Process '.\gpt_hwpx_tikz\GPT_HWPX_원클릭_기하기호보정.exe' -ArgumentList @('--test-input','regression/math_only.txt','--output-dir','regression/coreout','--no-open') -Wait -PassThru
+          if($p.ExitCode -ne 0){ throw "core exit $($p.ExitCode)" }
+          $o=Get-ChildItem 'regression/coreout\*.hwpx'|Sort-Object LastWriteTime -Descending|Select-Object -First 1
+          if($null -eq $o){ throw 'core HWPX not created' }
+          python -m zipfile -t $o.FullName
+          if($LASTEXITCODE -ne 0){ throw 'core HWPX ZIP check failed' }
+          python -c "import zipfile,xml.etree.ElementTree as E,sys;z=zipfile.ZipFile(sys.argv[1]);r=E.fromstring(z.read('Contents/section0.xml'));ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'};s='\n'.join((x.text or '') for x in r.findall('.//hp:equation/hp:script',ns));assert 'angle' in s.lower();assert 'bot' in s.lower();assert 'circ' in s.lower();print('CORE MATH OK')" $o.FullName
+          Copy-Item $o.FullName 'regression/base.hwpx' -Force
+
+      - name: Test HWPX picture injection without TeX
+        shell: pwsh
+        run: |
+          Set-Content 'regression/picture_test.py' -Encoding utf8 -Value @'
+          import sys, shutil, tempfile, zipfile, xml.etree.ElementTree as E
+          from pathlib import Path
+          sys.path.insert(0,'gpt_hwpx_tikz')
+          import app
+          from PIL import Image, ImageDraw
+
+          raw=Path('regression/tagged_sample.txt').read_text(encoding='utf-8-sig')
+          normalized,blocks=app.preprocess_tags(raw)
+          assert len(blocks)==1
+
+          td=Path(tempfile.mkdtemp(prefix='gpt_hwpx_reg_'))
+          try:
+              coreout=td/'coreout'
+              base=app.call_existing_converter(normalized,coreout)
+              img=Image.new('RGBA',(900,520),(255,255,255,0))
+              d=ImageDraw.Draw(img)
+              d.line((60,430,450,60,840,430,60,430),fill=(0,0,0,255),width=6)
+              png=td/'synthetic.png'; img.save(png)
+              b=blocks[0]; b.image_path=png; b.media_type='image/png'; b.natural_w=18000; b.natural_h=10400
+              log=[]
+              app.inject_tikz_images(base,blocks,log)
+              app.validate_hwpx(base)
+              out=Path('regression/GPT_HWPX_TikZ_삽입테스트.hwpx'); shutil.copy2(base,out)
+              with zipfile.ZipFile(out) as z:
+                  names=set(z.namelist())
+                  sec=z.read('Contents/section0.xml').decode('utf-8')
+                  assert '<hp:pic' in sec
+                  assert 'GPTTIKZPLACE' not in sec
+                  assert any(x.startswith('BinData/image') and x.endswith('.png') for x in names)
+                  root=E.fromstring(z.read('Contents/content.hpf'))
+                  opf='http://www.idpf.org/2007/opf/'
+                  items=list(root.findall(f'.//{{{opf}}}item'))
+                  assert any((x.get('media-type')=='image/png' and (x.get('href') or '').startswith('BinData/image')) for x in items)
+              print('PICTURE INJECTION OK')
+          finally:
+              shutil.rmtree(td,ignore_errors=True)
+          '@
+          python regression/picture_test.py
+
+      - name: Test TikZ missing-TeX behavior
+        shell: pwsh
+        run: |
+          python -c "import sys,tempfile;from pathlib import Path;sys.path.insert(0,'gpt_hwpx_tikz');import app;old=app.find_tex_engine;app.find_tex_engine=lambda code:None;b=app.TikzBlock(1,r'\\begin{tikzpicture}\\draw(0,0)--(1,1);\\end{tikzpicture}','X');log=[];app.render_tikz(b,Path(tempfile.mkdtemp()),log);assert b.error=='TikZ 그림을 만들려면 TeX Live 또는 MiKTeX 설치가 필요합니다.';print('NO-TEX GRACEFUL OK')"
+
+      - name: Build Windows GUI EXE
+        shell: pwsh
+        run: |
+          $inner=(Resolve-Path 'gpt_hwpx_tikz/GPT_HWPX_원클릭_기하기호보정.exe').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name GPT_HWPX_원클릭_수식_TikZ `
+            --distpath dist --workpath build_tikz `
+            --add-binary "$inner;." `
+            --collect-all pymupdf `
+            gpt_hwpx_tikz/app.py
+
+      - name: EXE smoke test tag parser and core conversion
+        shell: pwsh
+        run: |
+          if(-not (Test-Path '.\dist\GPT_HWPX_원클릭_수식_TikZ.exe')){ throw 'EXE not created' }
+          python -m zipfile -t 'regression/GPT_HWPX_TikZ_삽입테스트.hwpx'
+          if($LASTEXITCODE -ne 0){ throw 'picture test HWPX invalid' }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_TikZ_TaggedMath_Windows
+          path: |
+            dist/GPT_HWPX_원클릭_수식_TikZ.exe
+            regression/GPT_HWPX_TikZ_삽입테스트.hwpx
+            regression/tagged_sample.txt
+          if-no-files-found: error
+          retention-days: 7
