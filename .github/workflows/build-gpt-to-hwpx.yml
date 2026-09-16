@@ -45,7 +45,7 @@ jobs:
           [IO.File]::WriteAllBytes('gpt_to_hwpx_v3/direct_hwpx_template.hwpx', [Convert]::FromBase64String($tpl))
 
           $sha = (Get-FileHash 'gpt_to_hwpx_v3/gpt_to_hwpx_v3.py' -Algorithm SHA256).Hash.ToLower()
-          if ($sha -ne '57c4f5693b45300e76c48f0f381a5957674e114b67dc010f661d55ac77e00a5d') { throw "V3.1 source SHA mismatch: $sha" }
+          if ($sha -ne '1ef1b899396d3e6bc5901b5c15f8a213938dc7806abb4d9430e868b4469987df') { throw "V3.1 source SHA mismatch: $sha" }
 
       - name: Install PyInstaller
         run: python -m pip install --upgrade pyinstaller
