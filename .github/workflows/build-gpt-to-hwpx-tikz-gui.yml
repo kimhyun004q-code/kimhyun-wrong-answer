@@ -1,0 +1,490 @@
+name: Build GPT HWPX TikZ GUI
+
+on:
+  push:
+    branches: [gpt-to-hwpx-build]
+    paths:
+      - '.github/workflows/build-gpt-to-hwpx-tikz-gui.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download current verified converter
+        uses: actions/download-artifact@v4
+        with:
+          name: GPT_HWPX_GeometrySymbols_Windows
+          path: prev
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 35077164531
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pyinstaller pymupdf pillow
+
+      - name: Create TikZ GUI wrapper
+        shell: pwsh
+        run: |
+          $inner=(Get-ChildItem 'prev' -Recurse -Filter 'GPT_HWPX_원클릭_기하기호보정.exe' | Select-Object -First 1).FullName
+          if(-not $inner){ throw 'verified inner EXE not found' }
+          New-Item -ItemType Directory -Force -Path app | Out-Null
+          Copy-Item $inner 'app/GPT_HWPX_원클릭_기하기호보정.exe' -Force
+
+          Set-Content 'app/main.py' -Encoding utf8 -Value @'
+          import ctypes
+          import os
+          import re
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+          import threading
+          import time
+          import winreg
+          import zipfile
+          from datetime import datetime
+          from pathlib import Path
+          import tkinter as tk
+          from tkinter import messagebox, scrolledtext
+
+          import fitz
+          from PIL import Image
+
+          CREATE_NO_WINDOW = 0x08000000
+          MARKER_PREFIX = 'TIKZPICTUREMARKER'
+
+          def resource(name):
+              return Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / name
+
+          def desktop():
+              try:
+                  q = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders')
+                  v, _ = winreg.QueryValueEx(q, 'Desktop')
+                  winreg.CloseKey(q)
+                  return Path(os.path.expandvars(v))
+              except Exception:
+                  return Path.home() / 'Desktop'
+
+          def timestamp():
+              return datetime.now().strftime('%Y%m%d_%H%M%S')
+
+          def parse_special_tags(text):
+              tikz_blocks = []
+
+              def tikz_repl(m):
+                  code = m.group(1).strip()
+                  idx = len(tikz_blocks) + 1
+                  tikz_blocks.append({'index': idx, 'code': code, 'marker': f'{MARKER_PREFIX}{idx:04d}'})
+                  return '\n\n' + tikz_blocks[-1]['marker'] + '\n\n'
+
+              text = re.sub(r'\[\[TIKZ\]\](.*?)\[\[/TIKZ\]\]', tikz_repl, text, flags=re.S | re.I)
+
+              def inline_repl(m):
+                  expr = re.sub(r'\s+', ' ', m.group(1).strip())
+                  return '`' + expr + '`'
+
+              def display_repl(m):
+                  expr = m.group(1).strip()
+                  return '\n\n$$\n' + expr + '\n$$\n\n'
+
+              def answer_repl(m):
+                  ans = re.sub(r'\s+', ' ', m.group(1).strip())
+                  return '\n[정답] ' + ans + '\n'
+
+              text = re.sub(r'\[\[INLINE_EQ\]\](.*?)\[\[/INLINE_EQ\]\]', inline_repl, text, flags=re.S | re.I)
+              text = re.sub(r'\[\[DISPLAY_EQ\]\](.*?)\[\[/DISPLAY_EQ\]\]', display_repl, text, flags=re.S | re.I)
+              text = re.sub(r'\[\[ANSWER\]\](.*?)\[\[/ANSWER\]\]', answer_repl, text, flags=re.S | re.I)
+              return text, tikz_blocks
+
+          def find_tex_executables():
+              names = ['xelatex', 'lualatex', 'pdflatex']
+              found = {}
+              for n in names:
+                  p = shutil.which(n)
+                  if p:
+                      found[n] = p
+              roots = [
+                  Path(r'C:\Program Files\MiKTeX\miktex\bin\x64'),
+                  Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs' / 'MiKTeX' / 'miktex' / 'bin' / 'x64',
+              ]
+              texlive = Path(r'C:\texlive')
+              if texlive.exists():
+                  try:
+                      roots.extend(sorted(texlive.glob(r'*\bin\windows'), reverse=True))
+                  except Exception:
+                      pass
+              for root in roots:
+                  if not root or not root.exists():
+                      continue
+                  for n in names:
+                      exe = root / (n + '.exe')
+                      if exe.exists() and n not in found:
+                          found[n] = str(exe)
+              return found
+
+          def has_korean(s):
+              return bool(re.search(r'[가-힣ㄱ-ㅎㅏ-ㅣ]', s))
+
+          def build_tex_document(code, korean=False):
+              if '\\documentclass' in code:
+                  return code
+              extras = r'''\usepackage{amsmath,amssymb}
+          \usepackage{tikz}
+          \usetikzlibrary{arrows.meta,calc,intersections,patterns,angles,quotes,decorations.pathreplacing,positioning}'''
+              if korean:
+                  extras += '\n\\usepackage{kotex}'
+              return '\\documentclass[tikz,border=2pt]{standalone}\n' + extras + '\n\\begin{document}\n' + code + '\n\\end{document}\n'
+
+          def render_tikz(code, workdir, index, log_lines):
+              texes = find_tex_executables()
+              if not texes:
+                  raise RuntimeError('TikZ 그림을 만들려면 TeX Live 또는 MiKTeX 설치가 필요합니다.')
+              korean = has_korean(code)
+              order = ['xelatex', 'lualatex', 'pdflatex'] if korean else ['pdflatex', 'xelatex', 'lualatex']
+              engine = next((texes[n] for n in order if n in texes), None)
+              if not engine:
+                  raise RuntimeError('사용 가능한 LaTeX 엔진을 찾지 못했습니다.')
+              stem = f'tikz_{index:04d}'
+              tex = workdir / f'{stem}.tex'
+              pdf = workdir / f'{stem}.pdf'
+              png = workdir / f'{stem}.png'
+              tex.write_text(build_tex_document(code, korean), encoding='utf-8')
+              cmd = [engine, '-interaction=nonstopmode', '-halt-on-error', '-file-line-error', tex.name]
+              p = subprocess.run(cmd, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 creationflags=CREATE_NO_WINDOW, timeout=90)
+              output = p.stdout.decode('utf-8', errors='replace')
+              log_lines.append(f'===== TikZ {index} / {Path(engine).name} =====\n{output}\n')
+              if p.returncode != 0 or not pdf.exists():
+                  raise RuntimeError(f'TikZ 그림 생성 실패: {index}번')
+              doc = fitz.open(pdf)
+              page = doc[0]
+              matrix = fitz.Matrix(300 / 72, 300 / 72)
+              pix = page.get_pixmap(matrix=matrix, alpha=True)
+              pix.save(str(png))
+              doc.close()
+              return png
+
+          def hwp_column_width(section):
+              m = re.search(r'<hp:pagePr[^>]*width="(\d+)"[^>]*>.*?<hp:margin[^>]*left="(\d+)"[^>]*right="(\d+)"', section, re.S)
+              if not m:
+                  return 42520
+              pagew, left, right = map(int, m.groups())
+              body = max(1000, pagew - left - right)
+              cm = re.search(r'<hp:colPr[^>]*colCount="(\d+)"', section)
+              cols = max(1, int(cm.group(1))) if cm else 1
+              gm = re.search(r'<hp:secPr[^>]*spaceColumns="(\d+)"', section)
+              gap = int(gm.group(1)) if gm else 0
+              return max(1000, (body - gap * (cols - 1)) // cols)
+
+          def picture_xml(index, imgid, png_path, section):
+              with Image.open(png_path) as im:
+                  pxw, pxh = im.size
+              # 300 dpi natural size. Never enlarge; cap at 90% of the current column.
+              natural_w = max(1, round(pxw / 300 * 7200))
+              natural_h = max(1, round(pxh / 300 * 7200))
+              colw = hwp_column_width(section)
+              cap = round(colw * 0.90)
+              w = min(natural_w, cap)
+              scale = w / natural_w
+              h = max(1, round(natural_h * scale))
+              pid = 1900000000 + index
+              paraid = 2299000000 + index
+              return f'''<hp:p id="{paraid}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:pic id="{pid}" zOrder="{index}" numberingType="PICTURE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="{pid}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/><hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="0" vertical="0"/><hp:rotationInfo angle="0" centerX="{w//2}" centerY="{h//2}" rotateimage="0"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect><hp:imgClip left="0" right="{w}" top="0" bottom="{h}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="{pxw}" dimheight="{pxh}"/><hc:img binaryItemIDRef="{imgid}" bright="0" contrast="0" effect="REAL_PIC" alpha="0"/><hp:effects></hp:effects><hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="CENTER" vertOffset="0" horzOffset="0"/><hp:outMargin left="0" right="0" top="100" bottom="100"/><hp:shapeComment>TikZ 그림</hp:shapeComment></hp:pic><hp:t/></hp:run></hp:p>'''
+
+          def inject_tikz_images(hwpx_path, rendered, failures):
+              with zipfile.ZipFile(hwpx_path, 'r') as zin:
+                  entries = [(i, zin.read(i.filename)) for i in zin.infolist()]
+              data_by_name = {i.filename: d for i, d in entries}
+              section = data_by_name['Contents/section0.xml'].decode('utf-8')
+              hpf = data_by_name['Contents/content.hpf'].decode('utf-8')
+              preview = data_by_name.get('Preview/PrvText.txt', b'').decode('utf-8', errors='replace')
+              if 'xmlns:hc=' not in section.split('>', 1)[0]:
+                  section = section.replace('<hs:sec ', '<hs:sec xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" ', 1)
+              new_files = []
+              for item in rendered:
+                  marker = item['marker']
+                  idx = item['index']
+                  imgid = f'tikzimg{idx:04d}'
+                  pic = picture_xml(idx, imgid, item['png'], section)
+                  pat = re.compile(r'<hp:p\b[^>]*>.*?' + re.escape(marker) + r'.*?</hp:p>', re.S)
+                  section, count = pat.subn(pic, section, count=1)
+                  if count != 1:
+                      failures.append(f'{idx}번: HWPX에서 TikZ 위치 표식을 찾지 못했습니다.')
+                      continue
+                  manifest_item = f'<opf:item id="{imgid}" href="BinData/{imgid}.png" media-type="image/png" isEmbeded="1"/>'
+                  hpf = hpf.replace('</opf:manifest>', manifest_item + '</opf:manifest>', 1)
+                  preview = preview.replace(marker, '')
+                  new_files.append((f'BinData/{imgid}.png', Path(item['png']).read_bytes()))
+              for fail in failures:
+                  pass
+              # Any unrendered marker becomes a small visible failure note, never raw TikZ code.
+              for idx in range(1, 10000):
+                  marker = f'{MARKER_PREFIX}{idx:04d}'
+                  if marker not in section:
+                      if idx > len(rendered) + len(failures) + 5:
+                          break
+                      continue
+                  msg = f'[TikZ 그림 생성 실패: {idx}번]'
+                  section = section.replace(marker, msg)
+                  preview = preview.replace(marker, msg)
+              tmp = hwpx_path.with_suffix('.tikz.tmp.hwpx')
+              try:
+                  with zipfile.ZipFile(tmp, 'w') as zout:
+                      for info, data in entries:
+                          if info.filename == 'Contents/section0.xml':
+                              data = section.encode('utf-8')
+                          elif info.filename == 'Contents/content.hpf':
+                              data = hpf.encode('utf-8')
+                          elif info.filename == 'Preview/PrvText.txt':
+                              data = preview.encode('utf-8')
+                          ctype = zipfile.ZIP_STORED if info.filename == 'mimetype' else zipfile.ZIP_DEFLATED
+                          zout.writestr(info.filename, data, compress_type=ctype)
+                      for name, data in new_files:
+                          zout.writestr(name, data, compress_type=zipfile.ZIP_DEFLATED)
+                  with zipfile.ZipFile(tmp, 'r') as z:
+                      bad = z.testzip()
+                      if bad:
+                          raise RuntimeError('HWPX ZIP 무결성 검사 실패: ' + bad)
+                      import xml.etree.ElementTree as ET
+                      ET.fromstring(z.read('Contents/section0.xml'))
+                      ET.fromstring(z.read('Contents/content.hpf'))
+                  os.replace(tmp, hwpx_path)
+              finally:
+                  if tmp.exists():
+                      try: tmp.unlink()
+                      except Exception: pass
+
+          def run_inner(normalized_text, out_path):
+              inner = resource('GPT_HWPX_원클릭_기하기호보정.exe')
+              if not inner.exists():
+                  raise RuntimeError('기존 HWPX 변환 엔진을 찾지 못했습니다.')
+              with tempfile.TemporaryDirectory(prefix='gpt_hwpx_input_') as td:
+                  f = Path(td) / 'input.md'
+                  f.write_text(normalized_text, encoding='utf-8')
+                  cmd = [str(inner), '--test-input', str(f), '--output-dir', str(out_path.parent), '--no-open']
+                  before = set(out_path.parent.glob('*.hwpx'))
+                  p = subprocess.run(cmd, creationflags=CREATE_NO_WINDOW, timeout=180)
+                  if p.returncode != 0:
+                      raise RuntimeError(f'기존 HWPX 변환 엔진 오류 (코드 {p.returncode})')
+                  after = set(out_path.parent.glob('*.hwpx')) - before
+                  if not after:
+                      # fallback: newest file in output dir
+                      cand = sorted(out_path.parent.glob('*.hwpx'), key=lambda x: x.stat().st_mtime, reverse=True)
+                      if not cand:
+                          raise RuntimeError('HWPX 결과 파일이 생성되지 않았습니다.')
+                      generated = cand[0]
+                  else:
+                      generated = max(after, key=lambda x: x.stat().st_mtime)
+                  if generated.resolve() != out_path.resolve():
+                      if out_path.exists(): out_path.unlink()
+                      generated.replace(out_path)
+
+          def convert_text(text, output_dir, no_open=False, test_png=None):
+              output_dir.mkdir(parents=True, exist_ok=True)
+              normalized, tikz = parse_special_tags(text)
+              out = output_dir / f'GPT해설_TikZ_{timestamp()}.hwpx'
+              failures = []
+              logs = []
+              with tempfile.TemporaryDirectory(prefix='gpt_tikz_') as td:
+                  work = Path(td)
+                  rendered = []
+                  for b in tikz:
+                      try:
+                          if test_png:
+                              png = Path(test_png)
+                          else:
+                              png = render_tikz(b['code'], work, b['index'], logs)
+                          rendered.append({'index': b['index'], 'marker': b['marker'], 'png': png})
+                      except Exception as e:
+                          failures.append(f"{b['index']}번: {e}")
+                  run_inner(normalized, out)
+                  inject_tikz_images(out, rendered, failures)
+              if logs or failures:
+                  log_path = output_dir / f'tikz_log_{timestamp()}.txt'
+                  log_path.write_text('\n'.join(logs + ['===== 오류 ====='] + failures), encoding='utf-8')
+              if not no_open:
+                  os.startfile(str(out))
+              return out, failures
+
+          class App(tk.Tk):
+              def __init__(self):
+                  super().__init__()
+                  self.title('GPT → HWPX 자동 조판 (수식 + TikZ)')
+                  self.geometry('920x700')
+                  self.minsize(720, 520)
+                  top = tk.Frame(self)
+                  top.pack(fill='x', padx=10, pady=(10, 6))
+                  self.clip_btn = tk.Button(top, text='클립보드에서 가져오기', command=self.load_clip, width=22)
+                  self.clip_btn.pack(side='left', padx=(0, 6))
+                  self.convert_btn = tk.Button(top, text='한글로 변환', command=self.start_convert, width=18)
+                  self.convert_btn.pack(side='left', padx=6)
+                  tk.Button(top, text='입력 지우기', command=lambda: self.text.delete('1.0', 'end'), width=14).pack(side='left', padx=6)
+                  self.status = tk.StringVar(value='ChatGPT 응답을 붙여넣거나 클립보드에서 가져오세요.')
+                  tk.Label(self, textvariable=self.status, anchor='w').pack(fill='x', padx=12, pady=(0, 5))
+                  self.text = scrolledtext.ScrolledText(self, wrap='word', undo=True, font=('맑은 고딕', 10))
+                  self.text.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+
+              def load_clip(self):
+                  try:
+                      t = self.clipboard_get()
+                  except Exception:
+                      messagebox.showwarning('클립보드', '클립보드에 읽을 수 있는 텍스트가 없습니다.')
+                      return
+                  self.text.delete('1.0', 'end')
+                  self.text.insert('1.0', t)
+                  self.status.set('클립보드 내용을 가져왔습니다.')
+
+              def start_convert(self):
+                  text = self.text.get('1.0', 'end-1c')
+                  if not text.strip():
+                      messagebox.showwarning('입력 필요', 'ChatGPT 응답을 먼저 붙여넣어 주세요.')
+                      return
+                  self.convert_btn.config(state='disabled')
+                  self.clip_btn.config(state='disabled')
+                  self.status.set('변환 중입니다...')
+                  threading.Thread(target=self.worker, args=(text,), daemon=True).start()
+
+              def worker(self, text):
+                  try:
+                      out, failures = convert_text(text, desktop() / 'GPT_HWPX')
+                      self.after(0, lambda: self.done(out, failures))
+                  except Exception as e:
+                      self.after(0, lambda: self.failed(str(e)))
+
+              def done(self, out, failures):
+                  self.convert_btn.config(state='normal')
+                  self.clip_btn.config(state='normal')
+                  self.status.set(f'완료: {out}')
+                  if failures:
+                      messagebox.showwarning('변환 완료', f'HWPX는 생성됐지만 TikZ {len(failures)}개가 실패했습니다.\n같은 폴더의 tikz_log 파일을 확인하세요.')
+                  else:
+                      messagebox.showinfo('변환 완료', 'HWPX 생성이 완료되었습니다.')
+
+              def failed(self, msg):
+                  self.convert_btn.config(state='normal')
+                  self.clip_btn.config(state='normal')
+                  self.status.set('변환 실패')
+                  messagebox.showerror('변환 실패', msg)
+
+          def cli_main(argv):
+              test = None; outdir = None; noopen = False; testpng = None; parseonly = False
+              i = 0
+              while i < len(argv):
+                  if argv[i] == '--test-input' and i + 1 < len(argv): test = Path(argv[i+1]); i += 2; continue
+                  if argv[i] == '--output-dir' and i + 1 < len(argv): outdir = Path(argv[i+1]); i += 2; continue
+                  if argv[i] == '--no-open': noopen = True; i += 1; continue
+                  if argv[i] == '--test-png' and i + 1 < len(argv): testpng = Path(argv[i+1]); i += 2; continue
+                  if argv[i] == '--parse-only': parseonly = True; i += 1; continue
+                  i += 1
+              if test:
+                  text = test.read_text(encoding='utf-8-sig')
+                  if parseonly:
+                      n, b = parse_special_tags(text)
+                      assert '[[TIKZ]]' not in n and '[[INLINE_EQ]]' not in n and '[[DISPLAY_EQ]]' not in n and '[[ANSWER]]' not in n
+                      assert len(b) >= 1
+                      print(n)
+                      return 0
+                  out, failures = convert_text(text, outdir or Path.cwd(), no_open=noopen, test_png=testpng)
+                  print(out)
+                  if failures: print('\n'.join(failures))
+                  return 0
+              App().mainloop()
+              return 0
+
+          if __name__ == '__main__':
+              raise SystemExit(cli_main(sys.argv[1:]))
+          '@
+
+          Set-Content 'app/sample.txt' -Encoding utf8 -Value @'
+          [[ANSWER]]
+          ⑤
+          [[/ANSWER]]
+
+          [해설]
+          타원의 방정식은
+          [[DISPLAY_EQ]]
+          \frac{x^2}{25}+\frac{y^2}{16}=1
+          [[/DISPLAY_EQ]]
+          이다. 점 [[INLINE_EQ]]F(3,0)[[/INLINE_EQ]]를 표시하면 다음과 같다.
+
+          [[TIKZ]]
+          \begin{tikzpicture}[scale=0.8]
+          \draw[->] (-5.5,0)--(5.5,0) node[right] {$x$};
+          \draw[->] (0,-4.5)--(0,4.5) node[above] {$y$};
+          \draw (0,0) ellipse (5 and 4);
+          \fill (3,0) circle (1.4pt) node[below] {$F$};
+          \end{tikzpicture}
+          [[/TIKZ]]
+
+          따라서 초점까지의 거리를 이용한다.
+          '@
+
+          Set-Content 'app/check.py' -Encoding utf8 -Value @'
+          import re,sys,zipfile,xml.etree.ElementTree as E
+          p=sys.argv[1]
+          with zipfile.ZipFile(p) as z:
+              assert z.testzip() is None
+              names=z.namelist()
+              assert any(n.startswith('BinData/tikzimg') and n.endswith('.png') for n in names), names
+              sec=z.read('Contents/section0.xml').decode('utf-8')
+              hpf=z.read('Contents/content.hpf').decode('utf-8')
+              E.fromstring(sec.encode('utf-8')); E.fromstring(hpf.encode('utf-8'))
+              assert '<hp:pic' in sec and 'binaryItemIDRef="tikzimg0001"' in sec
+              assert 'TIKZPICTUREMARKER' not in sec
+              assert '[[TIKZ]]' not in sec and '[[INLINE_EQ]]' not in sec and '[[DISPLAY_EQ]]' not in sec and '[[ANSWER]]' not in sec
+              assert 'BinData/tikzimg0001.png' in hpf
+              assert '<hp:equation' in sec
+              assert '[정답]' in sec
+          print('TAG + TIKZ INJECTION + HWPX INTEGRITY OK')
+          '@
+
+      - name: Parser test
+        shell: pwsh
+        run: |
+          python app/main.py --test-input app/sample.txt --parse-only | Out-Null
+          if($LASTEXITCODE -ne 0){throw 'tag parser test failed'}
+
+      - name: Build GUI EXE
+        shell: pwsh
+        run: |
+          $inner=(Resolve-Path 'app/GPT_HWPX_원클릭_기하기호보정.exe').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name GPT_HWPX_수식_TikZ_자동조판 `
+            --distpath dist --workpath build `
+            --add-binary "$inner;." `
+            --collect-all fitz `
+            app/main.py
+
+      - name: Create test PNG
+        shell: pwsh
+        run: |
+          python -c "from PIL import Image,ImageDraw; im=Image.new('RGBA',(900,500),(255,255,255,0)); d=ImageDraw.Draw(im); d.ellipse((50,50,850,450),outline=(0,0,0,255),width=5); im.save('app/test.png')"
+
+      - name: End-to-end HWPX test
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $p=Start-Process '.\dist\GPT_HWPX_수식_TikZ_자동조판.exe' -ArgumentList @('--test-input','app/sample.txt','--output-dir','out','--no-open','--test-png','app/test.png') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "EXE exit $($p.ExitCode)"}
+          $o=Get-ChildItem 'out\*.hwpx'|Sort-Object LastWriteTime -Descending|Select-Object -First 1
+          if($null -eq $o){throw 'HWPX not created'}
+          python -m zipfile -t $o.FullName
+          if($LASTEXITCODE -ne 0){throw 'ZIP integrity failed'}
+          python app/check.py $o.FullName
+          if($LASTEXITCODE -ne 0){throw 'HWPX TikZ regression failed'}
+          Copy-Item $o.FullName 'out/GPT_HWPX_수식_TikZ_테스트.hwpx' -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_TikZ_GUI_Windows
+          path: |
+            dist/GPT_HWPX_수식_TikZ_자동조판.exe
+            out/GPT_HWPX_수식_TikZ_테스트.hwpx
+          if-no-files-found: error
+          retention-days: 7
