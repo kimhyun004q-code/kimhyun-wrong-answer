@@ -12,6 +12,9 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v4
 
@@ -52,7 +55,7 @@ jobs:
           [[/DISPLAY_EQ]]
           이다.
           '@
-          python -c "import sys;sys.path.insert(0,'gpt_hwpx_tikz');import oneclick;t,a=oneclick.normalize_answer_first(open('malformed.txt',encoding='utf-8-sig').read());print(repr(t));assert a=='30번',(a,t);assert t.startswith('[정답] 30번\n[해설]\n'),t;assert t.count('[정답]')==1,t;assert t.count('[해설]')==1,t;print('ANSWER NORMALIZE OK')"
+          python -c "import sys;sys.path.insert(0,'gpt_hwpx_tikz');import oneclick;t,a=oneclick.normalize_answer_first(open('malformed.txt',encoding='utf-8-sig').read());assert a=='30번',(a,t);assert t.startswith('[정답] 30번\n[해설]\n'),t;assert t.count('[정답]')==1,t;assert t.count('[해설]')==1,t;print('ANSWER NORMALIZE OK')"
 
       - name: Build one-click EXE
         shell: pwsh
@@ -77,14 +80,13 @@ jobs:
           python -m zipfile -t $o.FullName
           if($LASTEXITCODE -ne 0){ throw 'HWPX ZIP check failed' }
           Set-Content 'check.py' -Encoding utf8 -Value @'
-          import sys,zipfile,re,xml.etree.ElementTree as E
+          import sys,zipfile,xml.etree.ElementTree as E
           p=sys.argv[1]
           with zipfile.ZipFile(p) as z:
               sec=z.read('Contents/section0.xml')
               E.fromstring(sec)
               prv=z.read('Preview/PrvText.txt').decode('utf-8',errors='replace') if 'Preview/PrvText.txt' in z.namelist() else ''
           clean=[x.strip() for x in prv.replace('\r','').split('\n') if x.strip()]
-          print(clean[:10])
           joined='\n'.join(clean)
           assert '[정답]' in joined and '30번' in joined,joined[:500]
           ai=joined.find('[정답]'); vi=joined.find('30번',ai); hi=joined.find('[해설]',vi)
