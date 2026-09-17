@@ -1,0 +1,1 @@
+Rollback to the stable v4 application and build settings after an automatic-update regression. This file triggers a clean rebuild; remove later if desired.
