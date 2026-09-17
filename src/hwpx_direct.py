@@ -10,6 +10,8 @@ HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 NS = {"hp": HP}
 SECTION_PATH = "Contents/section0.xml"
 HEADER_PATH = "Contents/header.xml"
+A4_WIDTH = "59528"
+A4_HEIGHT = "84188"
 SKIP_HEADINGS = {"서답형", "5지선다형", "객관식", "주관식"}
 MEANINGFUL_TAGS = {
     "tbl", "pic", "rect", "ellipse", "container", "equation", "ole",
@@ -74,10 +76,10 @@ def _build_cover_header(header_bytes: bytes) -> tuple[bytes, dict[str, str]]:
     ids: dict[str, str] = {}
     next_char = _next_id(chars)
     char_specs = [
-        ("spacer", 700),      # 7pt: 세로 위치 조절용
-        ("info", 3200),      # 32pt: 반명/회차/날짜
-        ("student", 4500),   # 45pt: 학생명
-        ("slogan", 3400),    # 34pt: 슬로건
+        ("spacer", 700),
+        ("info", 3200),
+        ("student", 4500),
+        ("slogan", 3400),
     ]
     for key, height in char_specs:
         cp = deepcopy(base_char)
@@ -113,6 +115,14 @@ def _build_cover_header(header_bytes: bytes) -> tuple[bytes, dict[str, str]]:
     )
 
 
+def _force_a4(section_para) -> None:
+    """구역의 용지를 원본과 무관하게 A4 세로로 고정한다."""
+    for page_pr in section_para.xpath(".//hp:pagePr", namespaces=NS):
+        page_pr.set("landscape", "NARROWLY")
+        page_pr.set("width", A4_WIDTH)
+        page_pr.set("height", A4_HEIGHT)
+
+
 def _section_template(root, col_count: int = 2, hide_first_background: bool = False):
     source = None
     for p in root:
@@ -143,6 +153,8 @@ def _section_template(root, col_count: int = 2, hide_first_background: bool = Fa
                 child.remove(item)
         if not keep:
             p.remove(child)
+
+    _force_a4(p)
 
     for col_pr in p.xpath(".//hp:colPr", namespaces=NS):
         col_pr.set("type", "NEWSPAPER")
@@ -220,10 +232,8 @@ def _append_cover(
     round_name: str,
     test_date: str,
 ) -> None:
-    # 첫 페이지는 1단 + 바탕쪽 감추기 전용 구역.
     root.append(deepcopy(cover_template))
 
-    # 시작 위치를 이전보다 위로 올린다.
     for _ in range(3):
         root.append(_cover_para("", styles, "spacer"))
 
@@ -231,7 +241,6 @@ def _append_cover(
     round_text = (round_name or "").strip() or "-"
     exam_date = (test_date or "").strip() or "-"
 
-    # 반명 / 회차 / 시험응시일을 각각 한 줄로 배치한다.
     root.append(_cover_para(f"반명  {class_text}", styles, "info"))
     root.append(_cover_para(f"회차  {round_text}", styles, "info"))
     root.append(_cover_para(f"시험응시일  {exam_date}", styles, "info"))
@@ -246,7 +255,6 @@ def _append_cover(
 
     root.append(_cover_para("성적이 오르는 신뢰의 이름 김현수학", styles, "slogan"))
 
-    # 2페이지부터 원래의 2단 문제 구역으로 복귀.
     problem_start = deepcopy(problem_template)
     problem_start.set("pageBreak", "1")
     problem_start.set("columnBreak", "0")
@@ -448,6 +456,13 @@ class HwpxExam:
             section_count = len(check_root.xpath(".//hp:secPr", namespaces=NS))
             if section_count < 2:
                 raise ValueError("표지와 문제를 분리하는 구역 설정 검증에 실패했습니다.")
+
+            page_nodes = check_root.xpath(".//hp:secPr/hp:pagePr", namespaces=NS)
+            if not page_nodes or any(
+                n.get("width") != A4_WIDTH or n.get("height") != A4_HEIGHT
+                for n in page_nodes
+            ):
+                raise ValueError("오답노트 A4 용지 설정 검증에 실패했습니다.")
 
             visibility_nodes = check_root.xpath(".//hp:secPr/hp:visibility", namespaces=NS)
             if not visibility_nodes or visibility_nodes[0].get("hideFirstMasterPage") != "1":
