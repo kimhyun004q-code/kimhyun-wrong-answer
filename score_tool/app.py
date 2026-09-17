@@ -2,7 +2,7 @@ import os, sys
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from core import APP_TITLE, EVAL_AREAS, analyze, fill_workbook, default_output_path, run_cli
+from core import APP_TITLE, EVAL_AREAS, analyze, fill_workbook, default_output_path
 
 def gui_main():
     try:
@@ -117,9 +117,4 @@ def gui_main():
     root.mainloop()
 
 if __name__ == '__main__':
-    if '--cli' in sys.argv:
-        idx=sys.argv.index('--cli'); args=sys.argv[idx+1:]
-        if len(args)<2: raise SystemExit('usage: app.py --cli exam.hwpx grade.xlsx [output.xlsx]')
-        run_cli(args[0],args[1],args[2] if len(args)>2 else None)
-    else:
-        gui_main()
+    gui_main()
