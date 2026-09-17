@@ -1,4 +1,4 @@
-import os, sys, shutil, base64, tempfile
+import os, sys, shutil
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -13,22 +13,28 @@ try:
 except Exception:
     check_and_update_async = None
 
-
-def resource_path(rel: str) -> str:
-    base = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
-    return str(base / rel)
+TEMPLATE_NAMES = ['등수 성적 처리기본틀 수정 2026.xlsx', 'template.xlsx']
 
 
-def ensure_template() -> str:
-    b64_path = resource_path('resources/template.b64')
-    if not os.path.isfile(b64_path):
-        raise FileNotFoundError('내장 엑셀 기본틀을 찾지 못했습니다.')
-    out = Path(tempfile.gettempdir()) / 'kimhyun_score_template.xlsx'
-    raw = Path(b64_path).read_text(encoding='utf-8').strip()
-    data = base64.b64decode(raw)
-    if (not out.exists()) or out.stat().st_size != len(data):
-        out.write_bytes(data)
-    return str(out)
+def program_dir() -> Path:
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def find_template() -> str:
+    dirs = [program_dir(), Path.cwd()]
+    for d in dirs:
+        for name in TEMPLATE_NAMES:
+            p = d / name
+            if p.is_file():
+                return str(p)
+    raise FileNotFoundError(
+        '성적처리 기본틀을 찾지 못했습니다.\n\n'
+        '프로그램과 같은 폴더에\n'
+        '「등수 성적 처리기본틀 수정 2026.xlsx」를 두어 주세요.\n'
+        '한 번만 같이 두면 이후에는 HWPX만 넣으면 됩니다.'
+    )
 
 
 def default_output_paths(hwpx_path: str):
@@ -64,7 +70,7 @@ def gui_main():
     ttk.Button(top,text='찾기',command=lambda: hwpx_var.set(filedialog.askopenfilename(filetypes=[('HWPX','*.hwpx')]) or hwpx_var.get())).grid(row=0,column=2)
     top.columnconfigure(1,weight=1)
 
-    ttk.Label(root, text='엑셀 기본틀은 프로그램 안에 내장되어 있습니다. HWPX만 넣으면 성적처리 XLSX와 HWPX 결과본을 같은 폴더에 만듭니다.', padding=(12,4)).pack(fill='x')
+    ttk.Label(root, text='성적처리 기본틀은 프로그램 폴더에 고정해 둡니다. 이후 HWPX만 넣으면 XLSX와 HWPX 결과본을 같은 폴더에 만듭니다.', padding=(12,4)).pack(fill='x')
 
     if dnd:
         drop = tk.Label(root,text='HWPX 파일을 여기로 드래그하세요',relief='groove',bd=2,height=3,font=('Malgun Gothic',11,'bold'))
@@ -128,7 +134,7 @@ def gui_main():
                 if abs(total-100)>1e-6: raise ValueError(f'배점 합계가 {total:g}점입니다. 100점으로 맞춰 주세요.')
 
             out_xlsx,out_hwpx=default_output_paths(hp)
-            template=ensure_template()
+            template=find_template()
             fill_workbook(template,hp,reviewed,out_xlsx)
             shutil.copy2(hp,out_hwpx)
             status.set(f'완료: {Path(out_xlsx).name} / {Path(out_hwpx).name}')
