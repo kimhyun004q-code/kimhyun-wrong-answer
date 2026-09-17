@@ -55,20 +55,21 @@ _wbp = f"{OUT}/{BASE}.xlsx"
 if os.path.exists(_wbp):
     try:
         _w = _ox.load_workbook(_wbp, data_only=True)
-        _orig = report3.make_comment
+        _orig = getattr(report3, "make_comment", None)
         _cache = {}
         import hashlib
         _h = lambda L: hashlib.md5("\n".join(L).encode("utf-8")).hexdigest()[:12]
-        for st in students:
-            if st["이름"] in _w.sheetnames:
-                _ws = _w[st["이름"]]
-                ls = [_ws.cell(27 + i, 1).value for i in range(4)]
-                ls = [l for l in ls if isinstance(l, str) and l.strip()]
-                if ls and _h(ls) != _ws.cell(27, 40).value:
-                    _cache[st["이름"]] = ls
-        if _cache:
-            report3.make_comment = lambda st: _cache.get(st["이름"], _orig(st))
-            print(f"고쳐 쓰신 지도 방향 {len(_cache)}명분을 이미지에 반영합니다.")
+        if _orig is not None:
+            for st in students:
+                if st["이름"] in _w.sheetnames:
+                    _ws = _w[st["이름"]]
+                    ls = [_ws.cell(27 + i, 1).value for i in range(4)]
+                    ls = [l for l in ls if isinstance(l, str) and l.strip()]
+                    if ls and _h(ls) != _ws.cell(27, 40).value:
+                        _cache[st["이름"]] = ls
+            if _cache:
+                report3.make_comment = lambda st: _cache.get(st["이름"], _orig(st))
+                print(f"고쳐 쓰신 지도 방향 {len(_cache)}명분을 이미지에 반영합니다.")
     except Exception as e:
         print("  (워크북 코멘트 읽기 건너뜀:", e, ")")
 
@@ -102,7 +103,8 @@ with sync_playwright() as p:
         assert shown == st["이름"], f"{i}번째 카드 이름 불일치: {shown} != {st['이름']}"
         seen[shown] = seen.get(shown, 0) + 1
         sfx = f" ({seen[shown]})" if seen[shown] > 1 else ""
-        path = f"{imgdir}/{i:02d} {shown}{sfx}.png"
+        low_mark = "x" if float(st.get("편차평균", 0) or 0) <= -20.0 else ""
+        path = f"{imgdir}/{i:02d} {shown}{low_mark}{sfx}.png"
         el.screenshot(path=path)
         made.append(path)
     b.close()
