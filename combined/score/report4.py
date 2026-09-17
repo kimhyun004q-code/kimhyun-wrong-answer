@@ -4,6 +4,10 @@ import importlib.util
 import os
 import sys
 
+# run3.py가 먼저 불러온 확장 파서를 기존 report3.py의 `import parse`에도 연결한다.
+if "parse" not in sys.modules and "parse4" in sys.modules:
+    sys.modules["parse"] = sys.modules["parse4"]
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _BASE_PATH = os.path.join(_HERE, "report3.py")
 _spec = importlib.util.spec_from_file_location("_report3_base", _BASE_PATH)
