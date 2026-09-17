@@ -47,7 +47,6 @@ jobs:
             --windowed `
             --name "김현수학_시험성적자동입력기" `
             --collect-all tkinterdnd2 `
-            --hidden-import windnd `
             --add-data "score_tool/template.xlsx;." `
             --paths score_tool `
             score_tool/app.py
