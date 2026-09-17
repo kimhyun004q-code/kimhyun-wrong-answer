@@ -48,9 +48,8 @@ def _homework_grade(v):
 
 
 def _rank_text(r, s):
-    total = s["반"]["응시자수"]
     tie = sum(1 for x in s.get("학생", {}).values() if x.get("점수") == r.get("점수"))
-    return f"{r['등수']}/{total} (동석차 {tie}명)"
+    return f"{r['등수']}등 (동석차 {tie}명)"
 
 
 def _single_stats(st):
@@ -95,17 +94,18 @@ def _areas(st):
         me = max(0, min(100, float(a["본인"])))
         avg = max(0, min(100, float(a["반"])))
         gap = me - avg
-        me_pin = min(99.1, max(0.0, me))
-        avg_pin = min(99.4, max(0.0, avg))
+        me_pin = min(98.7, max(1.3, me))
+        avg_pin = min(99.0, max(1.0, avg))
         out.append(
             f"<div class='area'>"
             f"<div class='area-head'><b>{esc(a['영역'])}</b>"
-            f"<span><strong class='me-txt'>본인 {me:.0f}%</strong> · 반 {avg:.0f}% · <strong class='gap-txt'>{gap:+.0f}%p</strong></span></div>"
+            f"<span><strong class='me-txt'>본인 {me:.0f}%</strong> · <strong class='avg-txt'>반 평균 {avg:.0f}%</strong> · <strong class='gap-txt'>{gap:+.0f}%p</strong></span></div>"
             f"<small>{esc(_base.AREA_DESC.get(a['영역'], ''))}</small>"
-            f"<div class='track'><i style='width:{me:.1f}%'></i>"
+            f"<div class='track'><i class='me-bar' style='width:{me:.1f}%'></i>"
             f"<em class='student-pin' style='left:{me_pin:.1f}%'></em>"
             f"<em class='avg-pin' style='left:{avg_pin:.1f}%'></em></div>"
-            f"<div class='legend'><span class='legend-me'>● 본인 위치</span><span class='legend-avg'>│ 반 평균</span></div>"
+            f"<div class='legend'><span class='legend-me'><i class='legend-dot'></i>본인 위치</span>"
+            f"<span class='legend-avg'><i class='legend-line'></i>반 평균</span></div>"
             f"</div>"
         )
     return "".join(out)
@@ -161,10 +161,10 @@ def card(st, meta):
 
 
 CSS = _base.CSS + """
-.stats.single .rank{font-size:11px!important;line-height:1.28!important;white-space:normal}
+.stats.single .rank{font-size:12px!important;line-height:1.28!important;white-space:normal}
 .hwbadge{display:inline-block;padding:2px 6px;border-radius:999px;font-size:10px;font-weight:800;white-space:nowrap}
 .hw4{background:#dff5e8;color:#176b43;border:1px solid #a9dec0}.hw3{background:#e3f0ff;color:#205f9c;border:1px solid #b9d8f7}.hw2{background:#fff0d9;color:#a25b00;border:1px solid #f1c77e}.hw1{background:#ffe3e1;color:#b53d36;border:1px solid #f3aaa5}.hw0{background:#f1f4f6;color:#6d7b87;border:1px solid #dfe5e9}
-.area{margin:10px 0;background:#fbfeff;border:1px solid #d7e8ef;border-radius:9px;padding:8px 9px}.area-head{display:flex;justify-content:space-between;gap:8px;font-size:12px}.area-head>b{color:#144f70;font-size:13px}.area-head span{color:#5f7180;font-size:10px}.me-txt{color:#0b4b67;font-weight:900}.gap-txt{color:#135f7f;font-weight:900}.area small{display:block;color:#7b8d99;font-size:9px;margin:3px 0 5px}.track{height:11px;background:#e8f0f4;position:relative;border-radius:8px;overflow:visible}.track i{display:block;height:100%;background:#16879b;border-radius:8px}.track .student-pin{position:absolute;top:-4px;height:19px;width:4px;background:#073c56;border-radius:2px;z-index:3}.track .avg-pin{position:absolute;top:-2px;height:15px;width:2px;background:#f09168;border-radius:1px;z-index:2}.legend{display:flex;justify-content:flex-end;gap:10px;margin-top:3px;font-size:8px}.legend-me{color:#073c56;font-weight:800}.legend-avg{color:#c96f4e}
+.area{margin:10px 0;background:#fbfeff;border:1px solid #d7e8ef;border-radius:9px;padding:8px 9px}.area-head{display:flex;justify-content:space-between;gap:8px;font-size:12px}.area-head>b{color:#144f70;font-size:13px}.area-head span{color:#5f7180;font-size:10px}.me-txt{color:#083f63;font-weight:900}.avg-txt{color:#d15d2f;font-weight:900}.gap-txt{color:#135f7f;font-weight:900}.area small{display:block;color:#7b8d99;font-size:9px;margin:3px 0 5px}.track{height:12px;background:#e9f0f4;position:relative;border-radius:8px;overflow:visible}.track .me-bar{display:block;height:100%;background:#0e8198;border-radius:8px}.track .student-pin{position:absolute;top:50%;width:13px;height:13px;background:#073c56;border:2px solid #ffffff;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 0 1px #073c56;z-index:4}.track .avg-pin{position:absolute;top:-4px;height:20px;width:3px;background:#f06f3c;border-radius:2px;transform:translateX(-50%);box-shadow:0 0 0 1px rgba(255,255,255,.85);z-index:3}.legend{display:flex;justify-content:flex-end;gap:14px;margin-top:5px;font-size:9px;font-weight:800}.legend span{display:inline-flex;align-items:center;gap:4px}.legend-me{color:#073c56}.legend-avg{color:#d15d2f}.legend-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#073c56;border:1px solid #fff;box-shadow:0 0 0 1px #073c56}.legend-line{display:inline-block;width:3px;height:12px;background:#f06f3c;border-radius:2px}
 .info-box{display:flex;flex-direction:column;gap:6px}.info-row{font-size:11px;line-height:1.55;padding:8px 10px;border-radius:9px;border:1px solid #e0edf4;background:#fbfeff;color:#34495e}.info-row b{color:#277da8;margin-right:4px}.info-row .sep{color:#9aa9b5;margin-right:5px}.info-row.global{background:#f2f8ff;border-color:#d9eafb}.info-row.personal{background:#fff8ef;border-color:#f4e2c8}.info-empty{font-size:11px;color:#91a0ac;background:#f8fbfd;border:1px solid #e5eef3;border-radius:9px;padding:8px 10px}
 """
 
