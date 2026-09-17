@@ -36,7 +36,6 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean --onefile --windowed `
             --name "김현수학_통합성적표_오답생성기" `
-            --icon "assets/app.ico" `
             --paths "src" `
             --paths "combined" `
             --collect-all tkinterdnd2 `
