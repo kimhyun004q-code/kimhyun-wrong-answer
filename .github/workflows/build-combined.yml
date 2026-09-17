@@ -31,6 +31,17 @@ jobs:
           $env:PLAYWRIGHT_BROWSERS_PATH="0"
           python -m playwright install chromium --only-shell
 
+      - name: Force A4 portrait for generated HWPX
+        shell: pwsh
+        run: |
+          $path = "src/hwpx_direct.py"
+          $text = Get-Content $path -Raw -Encoding UTF8
+          $text = $text.Replace('page_pr.set("landscape", "NARROWLY")', 'page_pr.set("landscape", "WIDELY")')
+          Set-Content $path -Value $text -Encoding UTF8
+          if ((Get-Content $path -Raw -Encoding UTF8) -notmatch 'page_pr\.set\("landscape", "WIDELY"\)') {
+            throw "A4 portrait patch failed"
+          }
+
       - name: Build EXE
         shell: pwsh
         run: |
