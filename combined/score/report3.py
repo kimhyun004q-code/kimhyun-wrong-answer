@@ -13,8 +13,15 @@ def esc(x):
 
 
 def _is_single(st):
-    """선택한 회차가 정확히 1개일 때만 1회차 전용 화면을 사용한다."""
     return len(st.get("rows", [])) == 1
+
+
+def _rank_text(r, s):
+    base = f"{r['등수']}/{s['반']['응시자수']}"
+    tie_count = sum(1 for x in s.get("학생", {}).values() if x.get("점수") == r.get("점수"))
+    if tie_count >= 2:
+        return f"{base} (동석차 {tie_count}명)"
+    return base
 
 
 def make_comment(st):
@@ -55,7 +62,7 @@ def _score_table(st):
         if r["결시"]:
             rows.append(f"<tr><td>{esc(s['hwp']['차시'])}</td><td class='mute'>{esc(r.get('사유') or '결시')}</td><td>-</td><td>-</td><td>-</td></tr>")
         else:
-            rows.append(f"<tr><td>{esc(s['hwp']['차시'])}</td><td><b>{r['점수']:.0f}</b></td><td>{s['반']['평균']:.1f}</td><td>{r['등수']}/{s['반']['응시자수']}</td><td>{', '.join(map(str,r['오답'])) or '-'}</td></tr>")
+            rows.append(f"<tr><td>{esc(s['hwp']['차시'])}</td><td><b>{r['점수']:.0f}</b></td><td>{s['반']['평균']:.1f}</td><td>{esc(_rank_text(r,s))}</td><td>{', '.join(map(str,r['오답'])) or '-'}</td></tr>")
     return "".join(rows)
 
 
@@ -69,7 +76,6 @@ def _wrong_table(st):
 
 
 def _all_questions_single(st):
-    """1회차 성적표에서는 오답뿐 아니라 모든 문항의 반 정답률과 본인 정오를 보여준다."""
     if not st.get("rows"):
         return "<p class='none'>문항 데이터가 없습니다.</p>"
     r = st["rows"][0]
@@ -116,19 +122,13 @@ def _weak(st):
 def _single_stats(st):
     r = st["rows"][0]
     if r.get("결시"):
-        return "<div class='stats'><div><span>응시</span><b>결시</b></div></div>"
+        return "<div class='stats single'><div><span>응시</span><b>결시</b></div></div>"
     s = r["sess"]
-    total = len(s.get("문항번호", []))
-    wrong = len(r.get("오답", []))
-    correct = max(0, total - wrong)
     return (
-        "<div class='stats'>"
+        "<div class='stats single'>"
         f"<div><span>점수</span><b>{r['점수']:.0f}</b></div>"
         f"<div><span>반 평균</span><b>{s['반']['평균']:.1f}</b></div>"
-        f"<div><span>석차</span><b>{r['등수']}/{s['반']['응시자수']}</b></div>"
-        f"<div><span>맞힌 문항</span><b>{correct}</b></div>"
-        f"<div><span>틀린 문항</span><b>{wrong}</b></div>"
-        f"<div><span>총 문항수</span><b>{total}</b></div>"
+        f"<div><span>석차</span><b class='rank'>{esc(_rank_text(r,s))}</b></div>"
         "</div>"
     )
 
@@ -160,7 +160,7 @@ def card(st, meta):
 
 
 CSS="""
-*{box-sizing:border-box} body{margin:0;background:#edf1f5;color:#10203a;font-family:'Malgun Gothic','Noto Sans KR',sans-serif;font-variant-numeric:tabular-nums}.card{width:420px;margin:0 auto 20px;background:#fff;padding:18px 16px 16px}.brand{font-weight:800;font-size:17px;text-align:right}.card h1{font-size:34px;margin:4px 0 2px}.sub{font-size:11px;color:#7d8796;margin:2px 0}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:#dfe4ea;margin:12px 0}.stats div{background:white;padding:8px 4px}.stats span{display:block;font-size:10px;color:#7d8796}.stats b{display:block;font-size:20px;margin-top:2px}h2{font-size:14px;border-bottom:1px solid #dfe4ea;padding:0 0 5px;margin:17px 0 7px}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#f3f6f9;color:#5c6779;padding:5px 3px}td{border-bottom:1px solid #edf0f3;padding:5px 3px;text-align:center}.detail td:nth-child(3){text-align:left}.allq td:nth-child(3){text-align:center}.allq .left{text-align:left}.good{font-weight:700}.bad{font-weight:800;text-decoration:underline}.hint{font-size:9px;color:#98a2b0;margin:-2px 0 6px}.mute,.none{color:#98a2b0}.none{font-size:12px;background:#f3f6f9;padding:8px;text-align:center}.area{margin:9px 0}.area>div:first-child{display:flex;justify-content:space-between;font-size:12px}.area span{font-size:10px;color:#7d8796}.area small{display:block;color:#98a2b0;font-size:9px;margin:2px 0 3px}.track{height:10px;background:#f0f3f6;position:relative}.track i{display:block;height:100%;background:#10203a}.track em{position:absolute;top:-2px;height:14px;width:2px;background:#c0392b}.weak{list-style:none;padding:0}.weak li{border-left:3px solid #c0392b;padding:4px 7px;margin:5px 0;font-size:12px}.weak span{color:#c0392b;font-weight:700}.weak small{display:block;color:#98a2b0;margin-top:2px}.comments p{font-size:12px;line-height:1.55;margin:5px 0;padding-left:10px;position:relative}.comments p:before{content:'•';position:absolute;left:0;color:#98a2b0}footer{border-top:1px solid #dfe4ea;margin-top:15px;padding-top:8px;font-size:9px;text-align:center;color:#98a2b0}
+*{box-sizing:border-box} body{margin:0;background:#edf1f5;color:#10203a;font-family:'Malgun Gothic','Noto Sans KR',sans-serif;font-variant-numeric:tabular-nums}.card{width:420px;margin:0 auto 20px;background:#fff;padding:18px 16px 16px}.brand{font-weight:800;font-size:17px;text-align:right}.card h1{font-size:34px;margin:4px 0 2px}.sub{font-size:11px;color:#7d8796;margin:2px 0}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:#dfe4ea;margin:12px 0}.stats div{background:white;padding:8px 4px}.stats span{display:block;font-size:10px;color:#7d8796}.stats b{display:block;font-size:20px;margin-top:2px}.stats.single .rank{font-size:13px;line-height:1.25;margin-top:5px}h2{font-size:14px;border-bottom:1px solid #dfe4ea;padding:0 0 5px;margin:17px 0 7px}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#f3f6f9;color:#5c6779;padding:5px 3px}td{border-bottom:1px solid #edf0f3;padding:5px 3px;text-align:center}.detail td:nth-child(3){text-align:left}.allq td:nth-child(3){text-align:center}.allq .left{text-align:left}.good{font-weight:700}.bad{font-weight:800;text-decoration:underline}.hint{font-size:9px;color:#98a2b0;margin:-2px 0 6px}.mute,.none{color:#98a2b0}.none{font-size:12px;background:#f3f6f9;padding:8px;text-align:center}.area{margin:9px 0}.area>div:first-child{display:flex;justify-content:space-between;font-size:12px}.area span{font-size:10px;color:#7d8796}.area small{display:block;color:#98a2b0;font-size:9px;margin:2px 0 3px}.track{height:10px;background:#f0f3f6;position:relative}.track i{display:block;height:100%;background:#10203a}.track em{position:absolute;top:-2px;height:14px;width:2px;background:#c0392b}.weak{list-style:none;padding:0}.weak li{border-left:3px solid #c0392b;padding:4px 7px;margin:5px 0;font-size:12px}.weak span{color:#c0392b;font-weight:700}.weak small{display:block;color:#98a2b0;margin-top:2px}.comments p{font-size:12px;line-height:1.55;margin:5px 0;padding-left:10px;position:relative}.comments p:before{content:'•';position:absolute;left:0;color:#98a2b0}footer{border-top:1px solid #dfe4ea;margin-top:15px;padding-top:8px;font-size:9px;text-align:center;color:#98a2b0}
 """
 
 
