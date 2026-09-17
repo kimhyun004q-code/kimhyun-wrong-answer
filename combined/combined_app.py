@@ -340,7 +340,10 @@ class App(TkinterDnD.Tk):
             stem = re.sub(r"^\d+\s+", "", img.stem)
             stem = re.sub(r"\s+\(\d+\)$", "", stem).strip()
             if not stem: continue
-            person = student_root / safe_name(stem)
+            # 성적표 파일명 끝의 x는 '평균 대비 -20점 이하' 표시일 뿐 학생 이름에는 포함하지 않는다.
+            student_name = stem[:-1].strip() if stem.endswith("x") else stem
+            if not student_name: continue
+            person = student_root / safe_name(student_name)
             person.mkdir(parents=True, exist_ok=True)
             shutil.copy2(img, person / "누적성적표.png")
 
