@@ -1,3 +1,3 @@
-# 김현수학 개인별오답 생성기
+# KimHyun Math Tools
 
-Windows에서 성적 엑셀과 한글 시험지를 입력받아 학생별 오답 PDF를 생성하는 데스크톱 프로그램입니다.
+Latest score tool build includes an embedded Excel template, fast Excel-only generation, analyzed-HWPX detection, cache reuse, and automatic updates.
