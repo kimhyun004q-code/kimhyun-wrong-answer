@@ -1,0 +1,77 @@
+name: Build Combined Score + Wrong Answer EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'combined/**'
+      - 'src/excel_reader.py'
+      - 'src/hwpx_direct.py'
+      - '.github/workflows/build-combined.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller==6.15.0 openpyxl==3.1.5 lxml olefile Pillow playwright tkinterdnd2==0.4.3
+          $env:PLAYWRIGHT_BROWSERS_PATH="0"
+          python -m playwright install chromium --only-shell
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed `
+            --name "김현수학_통합성적표_오답생성기" `
+            --icon "assets/app.ico" `
+            --paths "src" `
+            --paths "combined" `
+            --collect-all tkinterdnd2 `
+            --collect-all playwright `
+            --hidden-import PIL._tkinter_finder `
+            --hidden-import olefile `
+            --add-data "combined/score/run3.py;score" `
+            --add-data "combined/score/report3.py;score" `
+            --add-data "combined/score/parse.py;score" `
+            --add-data "combined/score/discover.py;score" `
+            --add-data "combined/score/build_xlsx.py;score" `
+            --exclude-module pandas `
+            --exclude-module numpy `
+            --exclude-module scipy `
+            --exclude-module matplotlib `
+            --exclude-module torch `
+            --exclude-module tensorflow `
+            --exclude-module sklearn `
+            --exclude-module cv2 `
+            --exclude-module transformers `
+            --exclude-module sympy `
+            --exclude-module IPython `
+            --exclude-module notebook `
+            --exclude-module pytest `
+            "combined/combined_app.py"
+
+      - name: Show output
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -Recurse | Select-Object FullName,Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kimhyun-combined-windows
+          path: dist/김현수학_통합성적표_오답생성기.exe
+          retention-days: 30
+          if-no-files-found: error
