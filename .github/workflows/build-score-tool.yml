@@ -1,4 +1,4 @@
-name: Build Test Score Tool EXE
+name: Build Auto Updating Score Tool EXE
 
 on:
   workflow_dispatch:
@@ -8,10 +8,13 @@ on:
       - "score_tool/**"
       - ".github/workflows/build-score-tool.yml"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +30,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r score_tool/requirements.txt
 
+      - name: Create build version
+        shell: pwsh
+        run: |
+          $version = "${{ github.run_number }}.${{ github.run_attempt }}.${{ github.run_id }}"
+          "APP_VERSION = '$version'" | Set-Content -Encoding UTF8 score_tool/build_version.py
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Build single EXE
         shell: pwsh
         run: |
@@ -40,18 +50,33 @@ jobs:
             --paths score_tool `
             score_tool/app.py
 
-      - name: Verify EXE
+      - name: Verify and make update manifest
         shell: pwsh
         run: |
           $exe = "dist\김현수학_시험성적자동입력기.exe"
           if (-not (Test-Path $exe)) { throw "EXE build missing" }
+          New-Item -ItemType Directory -Force releases | Out-Null
+          Copy-Item $exe "releases\kimhyun-test-score-tool.exe" -Force
+          $hash = (Get-FileHash "releases\kimhyun-test-score-tool.exe" -Algorithm SHA256).Hash.ToLower()
+          $url = "https://raw.githubusercontent.com/${{ github.repository }}/main/releases/kimhyun-test-score-tool.exe"
+          $json = @{version=$env:VERSION; url=$url; sha256=$hash; built_at=(Get-Date).ToUniversalTime().ToString('o')} | ConvertTo-Json
+          $json | Set-Content -Encoding UTF8 releases/update.json
           Get-Item $exe | Format-List Name,Length,LastWriteTime
-          Get-FileHash $exe -Algorithm SHA256
+          Write-Host "version=$env:VERSION sha256=$hash"
+
+      - name: Publish latest updater payload to repository
+        shell: pwsh
+        run: |
+          git config user.name "KimHyun Math Builder"
+          git config user.email "actions@users.noreply.github.com"
+          git add releases/kimhyun-test-score-tool.exe releases/update.json
+          git commit -m "Publish auto-update build $env:VERSION [skip ci]" || echo "No release changes"
+          git push
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kimhyun-test-score-tool
+          name: kimhyun-test-score-tool-autoupdate
           path: dist/김현수학_시험성적자동입력기.exe
           if-no-files-found: error
           retention-days: 30
