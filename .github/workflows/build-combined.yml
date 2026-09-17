@@ -44,7 +44,9 @@ jobs:
             --hidden-import olefile `
             --add-data "combined/score/run3.py;score" `
             --add-data "combined/score/report3.py;score" `
+            --add-data "combined/score/report4.py;score" `
             --add-data "combined/score/parse.py;score" `
+            --add-data "combined/score/parse4.py;score" `
             --add-data "combined/score/discover.py;score" `
             --add-data "combined/score/build_xlsx.py;score" `
             --exclude-module pandas `
