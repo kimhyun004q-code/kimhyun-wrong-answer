@@ -52,17 +52,35 @@ def _rank_text(r, s):
     return f"{r['등수']}등 (동석차 {tie}명)"
 
 
+def _class_extremes(s):
+    scores = [x.get("점수") for x in s.get("학생", {}).values() if x.get("점수") is not None]
+    if not scores:
+        return None, 0, None, 0
+    high = max(scores)
+    low = min(scores)
+    high_count = sum(1 for score in scores if score == high)
+    low_count = sum(1 for score in scores if score == low)
+    return high, high_count, low, low_count
+
+
 def _single_stats(st):
     r = st["rows"][0]
     if r.get("결시"):
         return "<div class='stats single'><div><span>응시</span><b>결시</b></div></div>"
     s = r["sess"]
     diff = r["점수"] - s["반"]["평균"]
+    tie = sum(1 for x in s.get("학생", {}).values() if x.get("점수") == r.get("점수"))
+    high, high_count, low, low_count = _class_extremes(s)
+    extremes = (
+        f"<strong>최고 {high:.0f}점 ({high_count}명)</strong>"
+        f"<strong>최저 {low:.0f}점 ({low_count}명)</strong>"
+    ) if high is not None else "<strong>-</strong>"
     return (
         "<div class='stats single'>"
         f"<div><span>점수</span><b>{r['점수']:.0f}</b></div>"
         f"<div><span>평균 대비</span><b>{diff:+.1f}점</b></div>"
-        f"<div><span>석차</span><b class='rank'>{esc(_rank_text(r, s))}</b></div>"
+        f"<div><span>석차</span><b class='rank-main'>{r['등수']}등</b><small class='rank-tie'>동석차 {tie}명</small></div>"
+        f"<div class='extreme-card'><span>반 최고·최저</span><b class='extremes'>{extremes}</b></div>"
         "</div>"
     )
 
@@ -161,7 +179,13 @@ def card(st, meta):
 
 
 CSS = _base.CSS + """
-.stats.single .rank{font-size:12px!important;line-height:1.28!important;white-space:normal}
+.stats.single{grid-template-columns:repeat(4,1fr)}
+.stats.single .rank-main{font-size:16px!important;line-height:1.1!important;margin-top:3px}
+.stats.single .rank-tie{display:block;font-size:9px;line-height:1.2;color:#9a6a2d;font-weight:800;margin-top:3px;white-space:nowrap}
+.stats.single .extreme-card{background:#f7f4ff;border-color:#e6dcfb}
+.stats.single .extreme-card>span{color:#76658e}
+.stats.single .extremes{font-size:10px!important;line-height:1.35!important;margin-top:3px!important;color:#6c55a0!important}
+.stats.single .extremes strong{display:block;font-size:10px;white-space:nowrap}
 .hwbadge{display:inline-block;padding:2px 6px;border-radius:999px;font-size:10px;font-weight:800;white-space:nowrap}
 .hw4{background:#dff5e8;color:#176b43;border:1px solid #a9dec0}.hw3{background:#e3f0ff;color:#205f9c;border:1px solid #b9d8f7}.hw2{background:#fff0d9;color:#a25b00;border:1px solid #f1c77e}.hw1{background:#ffe3e1;color:#b53d36;border:1px solid #f3aaa5}.hw0{background:#f1f4f6;color:#6d7b87;border:1px solid #dfe5e9}
 .area{margin:10px 0;background:#fbfeff;border:1px solid #d7e8ef;border-radius:9px;padding:8px 9px}.area-head{display:flex;justify-content:space-between;gap:8px;font-size:12px}.area-head>b{color:#144f70;font-size:13px}.area-head span{color:#5f7180;font-size:10px}.me-txt{color:#083f63;font-weight:900}.avg-txt{color:#d15d2f;font-weight:900}.gap-txt{color:#135f7f;font-weight:900}.area small{display:block;color:#7b8d99;font-size:9px;margin:3px 0 5px}.track{height:12px;background:#e9f0f4;position:relative;border-radius:8px;overflow:visible}.track .me-bar{display:block;height:100%;background:#0e8198;border-radius:8px}.track .student-pin{position:absolute;top:50%;width:13px;height:13px;background:#073c56;border:2px solid #ffffff;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 0 1px #073c56;z-index:4}.track .avg-pin{position:absolute;top:-4px;height:20px;width:3px;background:#f06f3c;border-radius:2px;transform:translateX(-50%);box-shadow:0 0 0 1px rgba(255,255,255,.85);z-index:3}.legend{display:flex;justify-content:flex-end;gap:14px;margin-top:5px;font-size:9px;font-weight:800}.legend span{display:inline-flex;align-items:center;gap:4px}.legend-me{color:#073c56}.legend-avg{color:#d15d2f}.legend-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#073c56;border:1px solid #fff;box-shadow:0 0 0 1px #073c56}.legend-line{display:inline-block;width:3px;height:12px;background:#f06f3c;border-radius:2px}
