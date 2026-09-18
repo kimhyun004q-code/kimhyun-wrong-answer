@@ -91,7 +91,23 @@ for _old in glob.glob(os.path.join(imgdir, "*.png")):
 
 made = []
 with sync_playwright() as p:
-    b = p.chromium.launch()
+    # 안정판/경량판: 번들 Chromium 대신 Windows에 기본 설치된 Edge를 우선 사용한다.
+    # 이 방식은 EXE 용량과 전송 실패 가능성을 크게 줄인다.
+    browser_error = None
+    b = None
+    for channel in ("msedge", "chrome"):
+        try:
+            b = p.chromium.launch(channel=channel)
+            print(f"성적표 렌더링 브라우저: {channel}")
+            break
+        except Exception as e:
+            browser_error = e
+    if b is None:
+        raise RuntimeError(
+            "성적표 이미지를 만들 브라우저를 찾지 못했습니다. "
+            "Microsoft Edge 또는 Google Chrome이 설치되어 있어야 합니다. "
+            f"({browser_error})"
+        )
     pg = b.new_page(viewport={"width": report3.CARD_W, "height": 900}, device_scale_factor=report3.SCALE)
     pg.goto("file://" + hp, wait_until="domcontentloaded")
     pg.wait_for_timeout(1000)
