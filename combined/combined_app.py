@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import runpy
 import shutil
-import subprocess
 import sys
 import tempfile
 import threading
@@ -22,7 +22,7 @@ from excel_reader import read_workbook
 from hwpx_direct import HwpxExam
 
 APP_TITLE = "김현수학 통합 성적표 + 개인별 오답 생성기"
-VERSION = "v1.0"
+VERSION = "v1.1 안정판"
 DATE_RE = re.compile(r"(?<!\d)(\d{6})(?!\d)")
 ROUND_RE = re.compile(r"(\d+)\s*(회차|회|차시)")
 
@@ -281,12 +281,34 @@ class App(TkinterDnD.Tk):
         self.running = True; self.btn.configure(state="disabled"); self.pb.configure(value=0)
         threading.Thread(target=self._run, args=(selected,), daemon=True).start()
 
-    def _score_cmd(self, in_dir: Path, out_dir: Path, count: int) -> list[str]:
-        if getattr(sys, "frozen", False):
-            return [sys.executable, "--score-engine", str(in_dir), str(out_dir), str(count)]
-        return [sys.executable, str(Path(__file__).resolve()), "--score-engine", str(in_dir), str(out_dir), str(count)]
-
     def _run_score_engine(self, selected: list[Session], score_dir: Path):
+        # 안정판: EXE가 자기 자신을 자식 프로세스로 다시 실행하지 않는다.
+        # 일부 PC/백신에서 one-file EXE의 self-spawn이 차단되어 빈 결과가 생기는 문제를 줄인다.
+        class _ScoreLogStream:
+            def __init__(self, emit):
+                self.emit = emit
+                self.buf = ""
+
+            def write(self, text):
+                if not text:
+                    return 0
+                self.buf += str(text).replace("\r", "")
+                while "\n" in self.buf:
+                    line, self.buf = self.buf.split("\n", 1)
+                    line = line.strip()
+                    if line:
+                        self.emit(line)
+                return len(text)
+
+            def flush(self):
+                line = self.buf.strip()
+                self.buf = ""
+                if line:
+                    self.emit(line)
+
+            def reconfigure(self, **kwargs):
+                return None
+
         with tempfile.TemporaryDirectory(prefix="kimhyun_score_input_") as td:
             inp = Path(td)
             used = set()
@@ -300,14 +322,16 @@ class App(TkinterDnD.Tk):
                 used.add(name)
                 shutil.copy2(s.xlsx, inp / name)
             self._log("누적 성적표 생성 중…")
-            proc = subprocess.Popen(self._score_cmd(inp, score_dir, len(selected)), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                line = line.strip()
-                if line: self._log("[성적표] " + line)
-            rc = proc.wait()
-            if rc != 0:
-                raise RuntimeError(f"성적표 생성 단계가 중단되었습니다. (코드 {rc})")
+            stream = _ScoreLogStream(lambda line: self._log("[성적표] " + line))
+            try:
+                with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
+                    run_score_engine([str(inp), str(score_dir), str(len(selected))])
+            except SystemExit as e:
+                code = e.code
+                if code not in (None, 0):
+                    raise RuntimeError(f"성적표 생성 단계가 중단되었습니다. ({code})") from None
+            finally:
+                stream.flush()
 
     def _create_wrong_notes(self, selected: list[Session], wrong_root: Path, student_root: Path):
         total_sessions = len(selected)
@@ -388,15 +412,18 @@ def run_score_engine(argv: list[str]) -> int:
     score_dir = b / "score"
     if not score_dir.exists():
         score_dir = Path(__file__).resolve().parent / "score"
-    sys.path.insert(0, str(score_dir))
-    browser_dir = b / "playwright" / "driver" / "package" / ".local-browsers"
-    if browser_dir.exists():
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
-    for script in ("run3.py", "build_xlsx.py"):
-        target = score_dir / script
-        sys.argv = [str(target), in_dir, out_dir, count]
-        runpy.run_path(str(target), run_name="__main__")
-    return 0
+    old_argv = sys.argv[:]
+    old_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(score_dir))
+        for script in ("run3.py", "build_xlsx.py"):
+            target = score_dir / script
+            sys.argv = [str(target), in_dir, out_dir, count]
+            runpy.run_path(str(target), run_name="__main__")
+        return 0
+    finally:
+        sys.argv = old_argv
+        sys.path[:] = old_path
 
 
 def main():
