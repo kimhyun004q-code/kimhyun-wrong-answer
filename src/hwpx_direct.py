@@ -14,6 +14,9 @@ A4_WIDTH = "59528"
 A4_HEIGHT = "84188"
 B4_TO_A4_SCALE = 210.0 / 257.0
 A4_COLUMN_GAP = 1000
+QUESTION_TOP_SPACER_HEIGHT = 1700  # 약 6mm
+CHOICE_LINE_SPACING = 2000
+CHOICE_MARKS = ("①", "②", "③", "④", "⑤")
 SKIP_HEADINGS = {"서답형", "5지선다형", "객관식", "주관식"}
 MEANINGFUL_TAGS = {
     "tbl", "pic", "rect", "ellipse", "container", "equation", "ole",
@@ -40,6 +43,40 @@ def _is_empty_layout_para(paragraph) -> bool:
     return True
 
 
+def _is_choice_para(paragraph) -> bool:
+    text = _text_of(paragraph).lstrip()
+    return text.startswith(CHOICE_MARKS)
+
+
+def _choice_para_pr_id(root) -> str | None:
+    counts: dict[str, int] = {}
+    for paragraph in root.xpath(".//hp:p", namespaces=NS):
+        if not _is_choice_para(paragraph):
+            continue
+        para_id = paragraph.get("paraPrIDRef")
+        if para_id:
+            counts[para_id] = counts.get(para_id, 0) + 1
+    if not counts:
+        return None
+    return max(counts, key=counts.get)
+
+
+def _apply_choice_spacing(container, choice_para_pr: str | None, layout_scale: float) -> None:
+    if not choice_para_pr:
+        return
+    paras = [container]
+    paras.extend(container.xpath(".//hp:p", namespaces=NS))
+    for paragraph in paras:
+        if etree.QName(paragraph).localname != "p" or not _is_choice_para(paragraph):
+            continue
+        paragraph.set("paraPrIDRef", choice_para_pr)
+        if layout_scale < 0.999:
+            for lineseg in paragraph.xpath("./hp:linesegarray/hp:lineseg", namespaces=NS):
+                value = lineseg.get("spacing")
+                if value is not None:
+                    lineseg.set("spacing", _scaled_number(value, 1.0 / layout_scale))
+
+
 def _find_local(root, local_name: str):
     for node in root.iter():
         if etree.QName(node).localname == local_name:
@@ -64,7 +101,7 @@ def _next_id(parent) -> int:
     return (max(values) + 1) if values else 0
 
 
-def _build_cover_header(header_bytes: bytes) -> tuple[bytes, dict[str, str]]:
+def _build_cover_header(header_bytes: bytes, choice_source_para_pr: str | None = None) -> tuple[bytes, dict[str, str]]:
     """표지 전용 문단/글자 스타일을 HWPX header.xml에 추가한다."""
     root = etree.fromstring(header_bytes)
     chars = _find_local(root, "charProperties")
@@ -79,6 +116,7 @@ def _build_cover_header(header_bytes: bytes) -> tuple[bytes, dict[str, str]]:
     next_char = _next_id(chars)
     char_specs = [
         ("spacer", 700),
+        ("question_top_spacer", QUESTION_TOP_SPACER_HEIGHT),
         ("info", 3200),
         ("student", 4500),
         ("slogan", 3400),
@@ -108,8 +146,24 @@ def _build_cover_header(header_bytes: bytes) -> tuple[bytes, dict[str, str]]:
     align.set("horizontal", "CENTER")
     align.set("vertical", "BASELINE")
     paras.append(pp)
-    paras.set("itemCnt", str(len(list(paras))))
     ids["para_center"] = str(para_id)
+
+    if choice_source_para_pr:
+        choice_source = _find_id(paras, choice_source_para_pr)
+        if choice_source is not None:
+            choice_pp = deepcopy(choice_source)
+            choice_id = _next_id(paras)
+            choice_pp.set("id", str(choice_id))
+            choice_pp.set("snapToGrid", "0")
+            for node in choice_pp.iter():
+                if etree.QName(node).localname == "lineSpacing":
+                    node.set("type", "BETWEEN_LINES")
+                    node.set("unit", "HWPUNIT")
+                    node.set("value", str(CHOICE_LINE_SPACING))
+            paras.append(choice_pp)
+            ids["choice_para"] = str(choice_id)
+
+    paras.set("itemCnt", str(len(list(paras))))
 
     return (
         etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True),
@@ -420,12 +474,16 @@ class HwpxExam:
             self.root = etree.fromstring(z.read(SECTION_PATH))
             header_bytes = z.read(HEADER_PATH)
 
+        choice_source_para_pr = _choice_para_pr_id(self.root)
         self.layout_scale = B4_TO_A4_SCALE if _needs_b4_to_a4_scale(self.root) else 1.0
         if self.layout_scale < 0.999:
             _scale_section_layout(self.root, self.layout_scale)
             header_bytes = _scale_header_layout(header_bytes, self.layout_scale)
 
-        self.output_header, self.cover_styles = _build_cover_header(header_bytes)
+        self.output_header, self.cover_styles = _build_cover_header(
+            header_bytes,
+            choice_source_para_pr=choice_source_para_pr,
+        )
         self.para_pr, self.char_pr = _style_ids(self.root)
         self.cover_template = _section_template(self.root, 1, hide_first_background=True)
         self.problem_template = _section_template(self.root, 2, hide_first_background=False)
@@ -470,6 +528,11 @@ class HwpxExam:
                 cp = deepcopy(paragraph)
                 cp.set("pageBreak", "0")
                 cp.set("columnBreak", "0")
+                _apply_choice_spacing(
+                    cp,
+                    self.cover_styles.get("choice_para"),
+                    self.layout_scale,
+                )
                 if not _is_empty_layout_para(cp):
                     items.append(cp)
             if not items:
@@ -509,10 +572,19 @@ class HwpxExam:
             new_root.append(
                 _label_para(
                     self.para_pr,
-                    self.char_pr,
-                    label,
+                    self.cover_styles["question_top_spacer"],
+                    "",
                     page_break=page_break,
                     column_break=column_break,
+                )
+            )
+            new_root.append(
+                _label_para(
+                    self.para_pr,
+                    self.char_pr,
+                    label,
+                    page_break=False,
+                    column_break=False,
                 )
             )
             for p in self.blocks[q]:
