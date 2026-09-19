@@ -12,6 +12,8 @@ SECTION_PATH = "Contents/section0.xml"
 HEADER_PATH = "Contents/header.xml"
 A4_WIDTH = "59528"
 A4_HEIGHT = "84188"
+B4_TO_A4_SCALE = 210.0 / 257.0
+A4_COLUMN_GAP = 1000
 SKIP_HEADINGS = {"서답형", "5지선다형", "객관식", "주관식"}
 MEANINGFUL_TAGS = {
     "tbl", "pic", "rect", "ellipse", "container", "equation", "ole",
@@ -115,10 +117,127 @@ def _build_cover_header(header_bytes: bytes) -> tuple[bytes, dict[str, str]]:
     )
 
 
+def _scaled_number(value: str, factor: float, signed_u32: bool = False) -> str:
+    """HWPUNIT 계열 숫자를 안전하게 배율 조정한다."""
+    try:
+        if "." in value:
+            return f"{float(value) * factor:.6f}".rstrip("0").rstrip(".")
+        number = int(value)
+        if signed_u32 and number > 0x7FFFFFFF:
+            number -= 0x100000000
+            number = int(round(number * factor))
+            return str(number & 0xFFFFFFFF)
+        return str(int(round(number * factor)))
+    except (TypeError, ValueError):
+        return value
+
+
+def _scale_attr(node, name: str, factor: float, signed_u32: bool = False) -> None:
+    value = node.get(name)
+    if value is not None:
+        node.set(name, _scaled_number(value, factor, signed_u32=signed_u32))
+
+
+def _scale_section_layout(root, factor: float) -> None:
+    """B4용으로 잡힌 고정 폭/좌표를 A4 2단에 맞게 함께 축소한다."""
+    side_tags = {"margin", "outMargin", "inMargin", "cellMargin", "textMargin"}
+    size_tags = {"sz", "cellSz", "orgSz", "curSz"}
+    point_tags = {"pt0", "pt1", "pt2", "pt3"}
+
+    for node in root.iter():
+        local = etree.QName(node).localname
+
+        if local in side_tags:
+            for name in ("left", "right", "top", "bottom", "header", "footer", "gutter"):
+                _scale_attr(node, name, factor)
+        elif local in size_tags:
+            _scale_attr(node, "width", factor)
+            _scale_attr(node, "height", factor)
+        elif local == "pos":
+            _scale_attr(node, "horzOffset", factor)
+            _scale_attr(node, "vertOffset", factor)
+        elif local == "offset":
+            _scale_attr(node, "x", factor, signed_u32=True)
+            _scale_attr(node, "y", factor, signed_u32=True)
+        elif local in point_tags:
+            _scale_attr(node, "x", factor, signed_u32=True)
+            _scale_attr(node, "y", factor, signed_u32=True)
+        elif local == "rotationInfo":
+            _scale_attr(node, "centerX", factor)
+            _scale_attr(node, "centerY", factor)
+        elif local in {"transMatrix", "scaMatrix", "rotMatrix"}:
+            _scale_attr(node, "e3", factor)
+            _scale_attr(node, "e6", factor)
+        elif local == "lineseg":
+            for name in ("vertpos", "vertsize", "textheight", "baseline", "spacing", "horzpos", "horzsize"):
+                _scale_attr(node, name, factor)
+        elif local == "drawText":
+            _scale_attr(node, "lastWidth", factor)
+        elif local == "lineShape":
+            _scale_attr(node, "width", factor)
+        elif local == "shadow":
+            _scale_attr(node, "offsetX", factor)
+            _scale_attr(node, "offsetY", factor)
+        elif local == "equation":
+            _scale_attr(node, "baseUnit", factor)
+
+
+def _scale_header_layout(header_bytes: bytes, factor: float) -> bytes:
+    """본문 글자 크기와 문단 HWPUNIT 값도 같은 비율로 축소한다."""
+    root = etree.fromstring(header_bytes)
+    for node in root.iter():
+        local = etree.QName(node).localname
+        if local == "charPr":
+            _scale_attr(node, "height", factor)
+        elif local in {"intent", "left", "right", "prev", "next"}:
+            if node.get("unit") == "HWPUNIT":
+                _scale_attr(node, "value", factor)
+        elif local == "lineSpacing":
+            if node.get("type") != "PERCENT" and node.get("unit") == "HWPUNIT":
+                _scale_attr(node, "value", factor)
+        elif local == "border":
+            for name in ("offsetLeft", "offsetRight", "offsetTop", "offsetBottom"):
+                _scale_attr(node, name, factor)
+        elif local == "tabItem":
+            _scale_attr(node, "pos", factor)
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+
+def _needs_b4_to_a4_scale(root) -> bool:
+    """A4 2단 폭보다 큰 고정 개체가 있으면 B4 레이아웃으로 판단한다."""
+    page_pr = root.xpath(".//hp:pagePr", namespaces=NS)
+    if page_pr:
+        node = page_pr[0]
+        try:
+            long_side = max(int(node.get("width", "0")), int(node.get("height", "0")))
+            if long_side > int(A4_HEIGHT) * 1.12:
+                return True
+        except ValueError:
+            pass
+
+        margin = node.find(f"{{{HP}}}margin")
+        if margin is not None:
+            try:
+                left = int(margin.get("left", "0"))
+                right = int(margin.get("right", "0"))
+                target_col = (int(A4_HEIGHT) - left - right - A4_COLUMN_GAP) / 2.0
+                fixed_widths = []
+                for cell in root.xpath(".//hp:cellSz", namespaces=NS):
+                    try:
+                        fixed_widths.append(int(cell.get("width", "0")))
+                    except ValueError:
+                        pass
+                if fixed_widths and max(fixed_widths) > target_col * 1.08:
+                    return True
+            except ValueError:
+                pass
+    return False
+
+
 def _force_a4(section_para) -> None:
-    """구역의 용지를 원본과 무관하게 A4 세로로 고정한다."""
+    """구역 용지는 A4 가로로 고정하고 2단 간격을 확보한다."""
     for page_pr in section_para.xpath(".//hp:pagePr", namespaces=NS):
-        page_pr.set("landscape", "NARROWLY")
+        page_pr.set("landscape", "WIDELY")
         page_pr.set("width", A4_WIDTH)
         page_pr.set("height", A4_HEIGHT)
 
@@ -161,8 +280,12 @@ def _section_template(root, col_count: int = 2, hide_first_background: bool = Fa
         col_pr.set("layout", "LEFT")
         col_pr.set("colCount", str(max(1, int(col_count))))
         col_pr.set("sameSz", "1")
-        if not col_pr.get("sameGap"):
-            col_pr.set("sameGap", "1000")
+        try:
+            current_gap = int(col_pr.get("sameGap", "0") or 0)
+        except ValueError:
+            current_gap = 0
+        if current_gap <= 0:
+            col_pr.set("sameGap", str(A4_COLUMN_GAP))
 
     for placement in p.xpath(".//hp:endNotePr/hp:placement", namespaces=NS):
         placement.set("place", "END_OF_DOCUMENT")
@@ -295,8 +418,14 @@ class HwpxExam:
                 raise ValueError("HWPX에서 Contents/header.xml을 찾지 못했습니다.")
             self.entries = [(info, z.read(info.filename)) for info in z.infolist()]
             self.root = etree.fromstring(z.read(SECTION_PATH))
-            self.output_header, self.cover_styles = _build_cover_header(z.read(HEADER_PATH))
+            header_bytes = z.read(HEADER_PATH)
 
+        self.layout_scale = B4_TO_A4_SCALE if _needs_b4_to_a4_scale(self.root) else 1.0
+        if self.layout_scale < 0.999:
+            _scale_section_layout(self.root, self.layout_scale)
+            header_bytes = _scale_header_layout(header_bytes, self.layout_scale)
+
+        self.output_header, self.cover_styles = _build_cover_header(header_bytes)
         self.para_pr, self.char_pr = _style_ids(self.root)
         self.cover_template = _section_template(self.root, 1, hide_first_background=True)
         self.problem_template = _section_template(self.root, 2, hide_first_background=False)
