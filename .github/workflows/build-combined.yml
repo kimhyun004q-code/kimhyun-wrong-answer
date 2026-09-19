@@ -30,7 +30,7 @@ jobs:
           pip install pyinstaller==6.15.0 openpyxl==3.1.5 lxml olefile Pillow playwright tkinterdnd2==0.4.3
           # 안정판은 Windows에 기본 설치된 Edge를 사용하므로 Chromium을 EXE에 넣지 않습니다.
 
-      - name: Force A4 portrait for generated HWPX
+      - name: Keep A4 landscape for generated HWPX
         shell: pwsh
         run: |
           $path = "src/hwpx_direct.py"
@@ -45,7 +45,7 @@ jobs:
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --onefile --windowed `
-            --name "김현수학_통합성적표_오답생성기" `
+            --name "김현수학_통합관리_A4" `
             --paths "src" `
             --paths "combined" `
             --collect-all tkinterdnd2 `
@@ -82,7 +82,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kimhyun-combined-windows
-          path: dist/김현수학_통합성적표_오답생성기.exe
+          name: kimhyun-combined-a4-windows
+          path: dist/김현수학_통합관리_A4.exe
           retention-days: 30
           if-no-files-found: error
