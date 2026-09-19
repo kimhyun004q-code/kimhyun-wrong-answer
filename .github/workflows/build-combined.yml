@@ -74,6 +74,11 @@ jobs:
             --exclude-module pytest `
             "combined/combined_app.py"
 
+      - name: Pack full source
+        shell: pwsh
+        run: |
+          git archive --format=zip --output="dist/김현수학_통합관리_A4_전체소스.zip" HEAD
+
       - name: Show output
         shell: pwsh
         run: |
@@ -84,5 +89,13 @@ jobs:
         with:
           name: kimhyun-combined-a4-windows
           path: dist/김현수학_통합관리_A4.exe
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kimhyun-combined-a4-source
+          path: dist/김현수학_통합관리_A4_전체소스.zip
           retention-days: 30
           if-no-files-found: error
