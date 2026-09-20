@@ -148,6 +148,604 @@ jobs:
           p.write_text(s,encoding='utf-8')
           '@
           python app/patch_all.py
+          Set-Content app/patch_sets.py -Encoding utf8 -Value @'
+          from pathlib import Path
+          import re
+
+          p=Path('app/ultrafast_core.py')
+          s=p.read_text(encoding='utf-8')
+
+          helper=r'''
+          def _protect_set_delimiters(expr: str) -> str:
+              """Protect literal set braces from Hancom grouping semantics."""
+              s = expr.replace(r'\{', 'ZZSETLBRACEXX').replace(r'\}', 'ZZSETRBRACEXX')
+              pat = re.compile(r'\{([^{}]*)\}')
+              for _ in range(8):
+                  changed = False
+                  out = []
+                  pos = 0
+                  for m in pat.finditer(s):
+                      inner = m.group(1)
+                      prefix = s[:m.start()].rstrip()
+                      whole = (not s[:m.start()].strip() and not s[m.end():].strip())
+                      after_relation = bool(re.search(r'(?:=|!=|<=|>=|<|>|\\in|\\notin|\\ni|\\subset(?:eq)?|\\supset(?:eq)?|\\cup|\\cap|\\setminus|[-+])\s*
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pyinstaller pymupdf
+
+      - name: Merged math regression
+        shell: pwsh
+        run: |
+          Set-Content app/regression.py -Encoding utf8 -Value @'
+          import sys, pathlib
+          sys.path.insert(0,str(pathlib.Path(__file__).parent))
+          import ultrafast_core as c
+          tests={
+            r'(10\sqrt{3})^2':'(10 sqrt {3})^{2}',
+            r'\sqrt{3}^2':'{sqrt {3}}^{2}',
+            r"f'(x)":'f prime (x)',
+            r'\binom{n}{r}':'{}_{n} rm C _{r}',
+            r'2^{1/2}':'2^{{1} over {2}}',
+            r'n\sqrt{n}':'n sqrt {n}',
+            r'-2\le x\le \frac32':'~LEQ~',
+            r'17^2=289<300=(10\sqrt{3})^2<324=18^2':'10 sqrt {3}',
+          }
+          for src,want in tests.items():
+              got=c.latex_to_hwp(src)
+              print(src,'=>',got)
+              assert want in got,(src,got,want)
+          assert '10sqrt' not in c.latex_to_hwp(r'(10\sqrt{3})^2')
+          print('MERGED MATH REGRESSION OK')
+          set_tests={
+            r'B=\\{1,3,6\\}':['LEFT { 1,3,6 RIGHT }'],
+            r'A^c\\cup B^c=\\{1,2,4,5,6\\}':['SMALLUNION','LEFT { 1,2,4,5,6 RIGHT }'],
+            r'A^c\\cup B^c=(A\\cap B)^c':['SMALLUNION','SMALLINTER'],
+            r'3\\in A\\cap B':[' IN ','SMALLINTER'],
+            r'X\\subset U':['SUBSET'],
+            r'(B\\cup\\{x\\})-A':['SMALLUNION','LEFT { x RIGHT }'],
+          }
+          for src,wants in set_tests.items():
+              got=c.latex_to_hwp(src)
+              print('SET',src,'=>',got)
+              for want in wants:
+                  assert want in got,(src,got,want)
+          print('SET NOTATION REGRESSION OK')
+          '@
+          python app/regression.py
+          Set-Content app/sample.txt -Encoding utf8 -Value @'
+          [정답] ① -4
+          [해설]
+          여기서 $17^2=289<300=(10\sqrt{3})^2<324=18^2$ 이므로 $17<10\sqrt{3}<18$이다.
+          점 $A$와 점 $B$를 잇는 선분 $AB$를 생각한다.
+          또한 $f'(x)$, $2^{1/2}$, $\binom{n}{r}$를 확인한다.
+          '@
+          New-Item -ItemType Directory -Force -Path outsrc | Out-Null
+          Push-Location app
+          python ultrafast_app.py --test-input sample.txt --output-dir ../outsrc --no-open --validate
+          Pop-Location
+          python -c "import zipfile,xml.etree.ElementTree as E,pathlib; p=next(pathlib.Path('outsrc').glob('*.hwpx')); z=zipfile.ZipFile(p); r=E.fromstring(z.read('Contents/section0.xml')); ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}; scripts='\\n'.join((x.text or '') for x in r.findall('.//hp:script',ns)); text='\\n'.join((x.text or '') for x in r.findall('.//hp:t',ns)); assert '[정답] ①' in text,text; assert '① -4' not in text,text; assert '(10 sqrt {3})^{2}' in scripts,scripts; assert 'rm A it' in scripts and 'rm AB it' in scripts,scripts; assert '{}_{n} rm C _{r}' in scripts,scripts; print('HWPX MERGED E2E OK')"
+
+      - name: Build Windows EXEs
+        shell: pwsh
+        run: |
+          $tpl=(Resolve-Path 'app/direct_hwpx_template.hwpx').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_HWPX_초고속_통합수식엔진 --distpath dist_onefile --workpath build_onefile --add-data "$tpl;." app/ultrafast_app.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name GPT_HWPX_초고속_FAST_통합수식엔진 --distpath dist_fast --workpath build_fast --add-data "$tpl;." app/ultrafast_app.py
+
+      - name: EXE smoke test
+        shell: pwsh
+        run: |
+          Set-Clipboard -Value '[정답] ① -4`n[해설]`n$17^2=289<300=(10\sqrt{3})^2<324=18^2$'
+          $p=Start-Process '.\dist_fast\GPT_HWPX_초고속_FAST_통합수식엔진\GPT_HWPX_초고속_FAST_통합수식엔진.exe' -ArgumentList @('--no-open') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "FAST smoke failed: $($p.ExitCode)"}
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $p=Start-Process '.\dist_onefile\GPT_HWPX_초고속_통합수식엔진.exe' -ArgumentList @('--test-input','app/sample.txt','--output-dir','out','--no-open','--validate') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "onefile exit $($p.ExitCode)"}
+          $o=Get-ChildItem 'out\*.hwpx'|Select-Object -First 1
+          Copy-Item $o.FullName 'out/GPT_HWPX_통합수식엔진_테스트.hwpx' -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_UltraFast_SetFix_Windows
+          path: |
+            dist_onefile/GPT_HWPX_초고속_통합수식엔진.exe
+            dist_fast/GPT_HWPX_초고속_FAST_통합수식엔진/**
+            out/GPT_HWPX_통합수식엔진_테스트.hwpx
+          if-no-files-found: error
+          retention-days: 7
+, prefix))
+                      set_like_content = bool(re.search(r'[,|]', inner)) or bool(re.fullmatch(r'\s*[A-Za-z0-9]+\s*', inner))
+                      command_arg = bool(re.search(r'\\[A-Za-z]+\s*
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pyinstaller pymupdf
+
+      - name: Merged math regression
+        shell: pwsh
+        run: |
+          Set-Content app/regression.py -Encoding utf8 -Value @'
+          import sys, pathlib
+          sys.path.insert(0,str(pathlib.Path(__file__).parent))
+          import ultrafast_core as c
+          tests={
+            r'(10\sqrt{3})^2':'(10 sqrt {3})^{2}',
+            r'\sqrt{3}^2':'{sqrt {3}}^{2}',
+            r"f'(x)":'f prime (x)',
+            r'\binom{n}{r}':'{}_{n} rm C _{r}',
+            r'2^{1/2}':'2^{{1} over {2}}',
+            r'n\sqrt{n}':'n sqrt {n}',
+            r'-2\le x\le \frac32':'~LEQ~',
+            r'17^2=289<300=(10\sqrt{3})^2<324=18^2':'10 sqrt {3}',
+          }
+          for src,want in tests.items():
+              got=c.latex_to_hwp(src)
+              print(src,'=>',got)
+              assert want in got,(src,got,want)
+          assert '10sqrt' not in c.latex_to_hwp(r'(10\sqrt{3})^2')
+          print('MERGED MATH REGRESSION OK')
+          set_tests={
+            r'B=\\{1,3,6\\}':['LEFT { 1,3,6 RIGHT }'],
+            r'A^c\\cup B^c=\\{1,2,4,5,6\\}':['SMALLUNION','LEFT { 1,2,4,5,6 RIGHT }'],
+            r'A^c\\cup B^c=(A\\cap B)^c':['SMALLUNION','SMALLINTER'],
+            r'3\\in A\\cap B':[' IN ','SMALLINTER'],
+            r'X\\subset U':['SUBSET'],
+            r'(B\\cup\\{x\\})-A':['SMALLUNION','LEFT { x RIGHT }'],
+          }
+          for src,wants in set_tests.items():
+              got=c.latex_to_hwp(src)
+              print('SET',src,'=>',got)
+              for want in wants:
+                  assert want in got,(src,got,want)
+          print('SET NOTATION REGRESSION OK')
+          '@
+          python app/regression.py
+          Set-Content app/sample.txt -Encoding utf8 -Value @'
+          [정답] ① -4
+          [해설]
+          여기서 $17^2=289<300=(10\sqrt{3})^2<324=18^2$ 이므로 $17<10\sqrt{3}<18$이다.
+          점 $A$와 점 $B$를 잇는 선분 $AB$를 생각한다.
+          또한 $f'(x)$, $2^{1/2}$, $\binom{n}{r}$를 확인한다.
+          '@
+          New-Item -ItemType Directory -Force -Path outsrc | Out-Null
+          Push-Location app
+          python ultrafast_app.py --test-input sample.txt --output-dir ../outsrc --no-open --validate
+          Pop-Location
+          python -c "import zipfile,xml.etree.ElementTree as E,pathlib; p=next(pathlib.Path('outsrc').glob('*.hwpx')); z=zipfile.ZipFile(p); r=E.fromstring(z.read('Contents/section0.xml')); ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}; scripts='\\n'.join((x.text or '') for x in r.findall('.//hp:script',ns)); text='\\n'.join((x.text or '') for x in r.findall('.//hp:t',ns)); assert '[정답] ①' in text,text; assert '① -4' not in text,text; assert '(10 sqrt {3})^{2}' in scripts,scripts; assert 'rm A it' in scripts and 'rm AB it' in scripts,scripts; assert '{}_{n} rm C _{r}' in scripts,scripts; print('HWPX MERGED E2E OK')"
+
+      - name: Build Windows EXEs
+        shell: pwsh
+        run: |
+          $tpl=(Resolve-Path 'app/direct_hwpx_template.hwpx').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_HWPX_초고속_통합수식엔진 --distpath dist_onefile --workpath build_onefile --add-data "$tpl;." app/ultrafast_app.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name GPT_HWPX_초고속_FAST_통합수식엔진 --distpath dist_fast --workpath build_fast --add-data "$tpl;." app/ultrafast_app.py
+
+      - name: EXE smoke test
+        shell: pwsh
+        run: |
+          Set-Clipboard -Value '[정답] ① -4`n[해설]`n$17^2=289<300=(10\sqrt{3})^2<324=18^2$'
+          $p=Start-Process '.\dist_fast\GPT_HWPX_초고속_FAST_통합수식엔진\GPT_HWPX_초고속_FAST_통합수식엔진.exe' -ArgumentList @('--no-open') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "FAST smoke failed: $($p.ExitCode)"}
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $p=Start-Process '.\dist_onefile\GPT_HWPX_초고속_통합수식엔진.exe' -ArgumentList @('--test-input','app/sample.txt','--output-dir','out','--no-open','--validate') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "onefile exit $($p.ExitCode)"}
+          $o=Get-ChildItem 'out\*.hwpx'|Select-Object -First 1
+          Copy-Item $o.FullName 'out/GPT_HWPX_통합수식엔진_테스트.hwpx' -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_UltraFast_SetFix_Windows
+          path: |
+            dist_onefile/GPT_HWPX_초고속_통합수식엔진.exe
+            dist_fast/GPT_HWPX_초고속_FAST_통합수식엔진/**
+            out/GPT_HWPX_통합수식엔진_테스트.hwpx
+          if-no-files-found: error
+          retention-days: 7
+, prefix))
+                      script_arg = prefix.endswith('^') or prefix.endswith('_')
+                      if (whole or after_relation) and set_like_content and not command_arg and not script_arg:
+                          out.append(s[pos:m.start()])
+                          out.append('ZZSETLBRACEXX' + inner + 'ZZSETRBRACEXX')
+                          pos = m.end()
+                          changed = True
+                  if not changed:
+                      break
+                  out.append(s[pos:])
+                  s = ''.join(out)
+              return s
+          '''
+
+          anchor='\ndef _latex_to_hwp_base(expr: str) -> str:\n'
+          if 'def _protect_set_delimiters' not in s:
+              if anchor not in s: raise SystemExit('set helper anchor missing')
+              s=s.replace(anchor,'\n'+helper+anchor,1)
+
+          anchor="    s = s.replace('&nbsp;', ' ')\n"
+          if 's = _protect_set_delimiters(s)' not in s:
+              if anchor not in s: raise SystemExit('set protect call anchor missing')
+              s=s.replace(anchor,anchor+'    s = _protect_set_delimiters(s)\n',1)
+
+          old="""        r'\\
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pyinstaller pymupdf
+
+      - name: Merged math regression
+        shell: pwsh
+        run: |
+          Set-Content app/regression.py -Encoding utf8 -Value @'
+          import sys, pathlib
+          sys.path.insert(0,str(pathlib.Path(__file__).parent))
+          import ultrafast_core as c
+          tests={
+            r'(10\sqrt{3})^2':'(10 sqrt {3})^{2}',
+            r'\sqrt{3}^2':'{sqrt {3}}^{2}',
+            r"f'(x)":'f prime (x)',
+            r'\binom{n}{r}':'{}_{n} rm C _{r}',
+            r'2^{1/2}':'2^{{1} over {2}}',
+            r'n\sqrt{n}':'n sqrt {n}',
+            r'-2\le x\le \frac32':'~LEQ~',
+            r'17^2=289<300=(10\sqrt{3})^2<324=18^2':'10 sqrt {3}',
+          }
+          for src,want in tests.items():
+              got=c.latex_to_hwp(src)
+              print(src,'=>',got)
+              assert want in got,(src,got,want)
+          assert '10sqrt' not in c.latex_to_hwp(r'(10\sqrt{3})^2')
+          print('MERGED MATH REGRESSION OK')
+          set_tests={
+            r'B=\\{1,3,6\\}':['LEFT { 1,3,6 RIGHT }'],
+            r'A^c\\cup B^c=\\{1,2,4,5,6\\}':['SMALLUNION','LEFT { 1,2,4,5,6 RIGHT }'],
+            r'A^c\\cup B^c=(A\\cap B)^c':['SMALLUNION','SMALLINTER'],
+            r'3\\in A\\cap B':[' IN ','SMALLINTER'],
+            r'X\\subset U':['SUBSET'],
+            r'(B\\cup\\{x\\})-A':['SMALLUNION','LEFT { x RIGHT }'],
+          }
+          for src,wants in set_tests.items():
+              got=c.latex_to_hwp(src)
+              print('SET',src,'=>',got)
+              for want in wants:
+                  assert want in got,(src,got,want)
+          print('SET NOTATION REGRESSION OK')
+          '@
+          python app/regression.py
+          Set-Content app/sample.txt -Encoding utf8 -Value @'
+          [정답] ① -4
+          [해설]
+          여기서 $17^2=289<300=(10\sqrt{3})^2<324=18^2$ 이므로 $17<10\sqrt{3}<18$이다.
+          점 $A$와 점 $B$를 잇는 선분 $AB$를 생각한다.
+          또한 $f'(x)$, $2^{1/2}$, $\binom{n}{r}$를 확인한다.
+          '@
+          New-Item -ItemType Directory -Force -Path outsrc | Out-Null
+          Push-Location app
+          python ultrafast_app.py --test-input sample.txt --output-dir ../outsrc --no-open --validate
+          Pop-Location
+          python -c "import zipfile,xml.etree.ElementTree as E,pathlib; p=next(pathlib.Path('outsrc').glob('*.hwpx')); z=zipfile.ZipFile(p); r=E.fromstring(z.read('Contents/section0.xml')); ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}; scripts='\\n'.join((x.text or '') for x in r.findall('.//hp:script',ns)); text='\\n'.join((x.text or '') for x in r.findall('.//hp:t',ns)); assert '[정답] ①' in text,text; assert '① -4' not in text,text; assert '(10 sqrt {3})^{2}' in scripts,scripts; assert 'rm A it' in scripts and 'rm AB it' in scripts,scripts; assert '{}_{n} rm C _{r}' in scripts,scripts; print('HWPX MERGED E2E OK')"
+
+      - name: Build Windows EXEs
+        shell: pwsh
+        run: |
+          $tpl=(Resolve-Path 'app/direct_hwpx_template.hwpx').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_HWPX_초고속_통합수식엔진 --distpath dist_onefile --workpath build_onefile --add-data "$tpl;." app/ultrafast_app.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name GPT_HWPX_초고속_FAST_통합수식엔진 --distpath dist_fast --workpath build_fast --add-data "$tpl;." app/ultrafast_app.py
+
+      - name: EXE smoke test
+        shell: pwsh
+        run: |
+          Set-Clipboard -Value '[정답] ① -4`n[해설]`n$17^2=289<300=(10\sqrt{3})^2<324=18^2$'
+          $p=Start-Process '.\dist_fast\GPT_HWPX_초고속_FAST_통합수식엔진\GPT_HWPX_초고속_FAST_통합수식엔진.exe' -ArgumentList @('--no-open') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "FAST smoke failed: $($p.ExitCode)"}
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $p=Start-Process '.\dist_onefile\GPT_HWPX_초고속_통합수식엔진.exe' -ArgumentList @('--test-input','app/sample.txt','--output-dir','out','--no-open','--validate') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "onefile exit $($p.ExitCode)"}
+          $o=Get-ChildItem 'out\*.hwpx'|Select-Object -First 1
+          Copy-Item $o.FullName 'out/GPT_HWPX_통합수식엔진_테스트.hwpx' -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_UltraFast_SetFix_Windows
+          path: |
+            dist_onefile/GPT_HWPX_초고속_통합수식엔진.exe
+            dist_fast/GPT_HWPX_초고속_FAST_통합수식엔진/**
+            out/GPT_HWPX_통합수식엔진_테스트.hwpx
+          if-no-files-found: error
+          retention-days: 7
+: '__DOLLAR__', r'\\{': '__LBRACE__', r'\\}': '__RBRACE__',
+          """
+          new="""        r'\\
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pyinstaller pymupdf
+
+      - name: Merged math regression
+        shell: pwsh
+        run: |
+          Set-Content app/regression.py -Encoding utf8 -Value @'
+          import sys, pathlib
+          sys.path.insert(0,str(pathlib.Path(__file__).parent))
+          import ultrafast_core as c
+          tests={
+            r'(10\sqrt{3})^2':'(10 sqrt {3})^{2}',
+            r'\sqrt{3}^2':'{sqrt {3}}^{2}',
+            r"f'(x)":'f prime (x)',
+            r'\binom{n}{r}':'{}_{n} rm C _{r}',
+            r'2^{1/2}':'2^{{1} over {2}}',
+            r'n\sqrt{n}':'n sqrt {n}',
+            r'-2\le x\le \frac32':'~LEQ~',
+            r'17^2=289<300=(10\sqrt{3})^2<324=18^2':'10 sqrt {3}',
+          }
+          for src,want in tests.items():
+              got=c.latex_to_hwp(src)
+              print(src,'=>',got)
+              assert want in got,(src,got,want)
+          assert '10sqrt' not in c.latex_to_hwp(r'(10\sqrt{3})^2')
+          print('MERGED MATH REGRESSION OK')
+          set_tests={
+            r'B=\\{1,3,6\\}':['LEFT { 1,3,6 RIGHT }'],
+            r'A^c\\cup B^c=\\{1,2,4,5,6\\}':['SMALLUNION','LEFT { 1,2,4,5,6 RIGHT }'],
+            r'A^c\\cup B^c=(A\\cap B)^c':['SMALLUNION','SMALLINTER'],
+            r'3\\in A\\cap B':[' IN ','SMALLINTER'],
+            r'X\\subset U':['SUBSET'],
+            r'(B\\cup\\{x\\})-A':['SMALLUNION','LEFT { x RIGHT }'],
+          }
+          for src,wants in set_tests.items():
+              got=c.latex_to_hwp(src)
+              print('SET',src,'=>',got)
+              for want in wants:
+                  assert want in got,(src,got,want)
+          print('SET NOTATION REGRESSION OK')
+          '@
+          python app/regression.py
+          Set-Content app/sample.txt -Encoding utf8 -Value @'
+          [정답] ① -4
+          [해설]
+          여기서 $17^2=289<300=(10\sqrt{3})^2<324=18^2$ 이므로 $17<10\sqrt{3}<18$이다.
+          점 $A$와 점 $B$를 잇는 선분 $AB$를 생각한다.
+          또한 $f'(x)$, $2^{1/2}$, $\binom{n}{r}$를 확인한다.
+          '@
+          New-Item -ItemType Directory -Force -Path outsrc | Out-Null
+          Push-Location app
+          python ultrafast_app.py --test-input sample.txt --output-dir ../outsrc --no-open --validate
+          Pop-Location
+          python -c "import zipfile,xml.etree.ElementTree as E,pathlib; p=next(pathlib.Path('outsrc').glob('*.hwpx')); z=zipfile.ZipFile(p); r=E.fromstring(z.read('Contents/section0.xml')); ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}; scripts='\\n'.join((x.text or '') for x in r.findall('.//hp:script',ns)); text='\\n'.join((x.text or '') for x in r.findall('.//hp:t',ns)); assert '[정답] ①' in text,text; assert '① -4' not in text,text; assert '(10 sqrt {3})^{2}' in scripts,scripts; assert 'rm A it' in scripts and 'rm AB it' in scripts,scripts; assert '{}_{n} rm C _{r}' in scripts,scripts; print('HWPX MERGED E2E OK')"
+
+      - name: Build Windows EXEs
+        shell: pwsh
+        run: |
+          $tpl=(Resolve-Path 'app/direct_hwpx_template.hwpx').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_HWPX_초고속_통합수식엔진 --distpath dist_onefile --workpath build_onefile --add-data "$tpl;." app/ultrafast_app.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name GPT_HWPX_초고속_FAST_통합수식엔진 --distpath dist_fast --workpath build_fast --add-data "$tpl;." app/ultrafast_app.py
+
+      - name: EXE smoke test
+        shell: pwsh
+        run: |
+          Set-Clipboard -Value '[정답] ① -4`n[해설]`n$17^2=289<300=(10\sqrt{3})^2<324=18^2$'
+          $p=Start-Process '.\dist_fast\GPT_HWPX_초고속_FAST_통합수식엔진\GPT_HWPX_초고속_FAST_통합수식엔진.exe' -ArgumentList @('--no-open') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "FAST smoke failed: $($p.ExitCode)"}
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $p=Start-Process '.\dist_onefile\GPT_HWPX_초고속_통합수식엔진.exe' -ArgumentList @('--test-input','app/sample.txt','--output-dir','out','--no-open','--validate') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "onefile exit $($p.ExitCode)"}
+          $o=Get-ChildItem 'out\*.hwpx'|Select-Object -First 1
+          Copy-Item $o.FullName 'out/GPT_HWPX_통합수식엔진_테스트.hwpx' -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_UltraFast_SetFix_Windows
+          path: |
+            dist_onefile/GPT_HWPX_초고속_통합수식엔진.exe
+            dist_fast/GPT_HWPX_초고속_FAST_통합수식엔진/**
+            out/GPT_HWPX_통합수식엔진_테스트.hwpx
+          if-no-files-found: error
+          retention-days: 7
+: '__DOLLAR__',
+          """
+          if old not in s: raise SystemExit('placeholder set-brace anchor missing')
+          s=s.replace(old,new,1)
+
+          old="""        r'\\emptyset':'EMPTYSET', r'\\varnothing':'EMPTYSET', r'\\cup':'cup', r'\\cap':'cap',
+          """
+          new="""        r'\\emptyset':'EMPTYSET', r'\\varnothing':'EMPTYSET', r'\\cup':'SMALLUNION', r'\\cap':'SMALLINTER', r'\\setminus':'-',
+          """
+          if old not in s: raise SystemExit('cup cap map anchor missing')
+          s=s.replace(old,new,1)
+
+          old="    s=s.replace(r'\\{',' { ').replace(r'\\}',' } ')\n"
+          if old not in s: raise SystemExit('escaped brace delimiter anchor missing')
+          s=s.replace(old,'',1)
+
+          old="        '∪':'cup','∩':'cap','∅':'EMPTYSET','∞':'INF','π':'pi','θ':'theta','α':'alpha','β':'beta','γ':'gamma',\n"
+          new="        '∪':'SMALLUNION','∩':'SMALLINTER','∅':'EMPTYSET','∞':'INF','π':'pi','θ':'theta','α':'alpha','β':'beta','γ':'gamma',\n"
+          if old not in s: raise SystemExit('unicode cup cap anchor missing')
+          s=s.replace(old,new,1)
+
+          anchor="    # Restore escaped literals.\n"
+          restore="    # Restore visible set delimiters using Hancom delimiter syntax.\n    s=s.replace('ZZSETLBRACEXX', ' LEFT { ').replace('ZZSETRBRACEXX', ' RIGHT } ')\n\n"
+          if restore not in s:
+              if anchor not in s: raise SystemExit('set delimiter restore anchor missing')
+              s=s.replace(anchor,restore+anchor,1)
+
+          old="    restore = {'__PERCENT__':'%', '__AMP__':'&', '__HASH__':'#', '__UNDERSCORE__':'_', '__DOLLAR__':'
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pyinstaller pymupdf
+
+      - name: Merged math regression
+        shell: pwsh
+        run: |
+          Set-Content app/regression.py -Encoding utf8 -Value @'
+          import sys, pathlib
+          sys.path.insert(0,str(pathlib.Path(__file__).parent))
+          import ultrafast_core as c
+          tests={
+            r'(10\sqrt{3})^2':'(10 sqrt {3})^{2}',
+            r'\sqrt{3}^2':'{sqrt {3}}^{2}',
+            r"f'(x)":'f prime (x)',
+            r'\binom{n}{r}':'{}_{n} rm C _{r}',
+            r'2^{1/2}':'2^{{1} over {2}}',
+            r'n\sqrt{n}':'n sqrt {n}',
+            r'-2\le x\le \frac32':'~LEQ~',
+            r'17^2=289<300=(10\sqrt{3})^2<324=18^2':'10 sqrt {3}',
+          }
+          for src,want in tests.items():
+              got=c.latex_to_hwp(src)
+              print(src,'=>',got)
+              assert want in got,(src,got,want)
+          assert '10sqrt' not in c.latex_to_hwp(r'(10\sqrt{3})^2')
+          print('MERGED MATH REGRESSION OK')
+          set_tests={
+            r'B=\\{1,3,6\\}':['LEFT { 1,3,6 RIGHT }'],
+            r'A^c\\cup B^c=\\{1,2,4,5,6\\}':['SMALLUNION','LEFT { 1,2,4,5,6 RIGHT }'],
+            r'A^c\\cup B^c=(A\\cap B)^c':['SMALLUNION','SMALLINTER'],
+            r'3\\in A\\cap B':[' IN ','SMALLINTER'],
+            r'X\\subset U':['SUBSET'],
+            r'(B\\cup\\{x\\})-A':['SMALLUNION','LEFT { x RIGHT }'],
+          }
+          for src,wants in set_tests.items():
+              got=c.latex_to_hwp(src)
+              print('SET',src,'=>',got)
+              for want in wants:
+                  assert want in got,(src,got,want)
+          print('SET NOTATION REGRESSION OK')
+          '@
+          python app/regression.py
+          Set-Content app/sample.txt -Encoding utf8 -Value @'
+          [정답] ① -4
+          [해설]
+          여기서 $17^2=289<300=(10\sqrt{3})^2<324=18^2$ 이므로 $17<10\sqrt{3}<18$이다.
+          점 $A$와 점 $B$를 잇는 선분 $AB$를 생각한다.
+          또한 $f'(x)$, $2^{1/2}$, $\binom{n}{r}$를 확인한다.
+          '@
+          New-Item -ItemType Directory -Force -Path outsrc | Out-Null
+          Push-Location app
+          python ultrafast_app.py --test-input sample.txt --output-dir ../outsrc --no-open --validate
+          Pop-Location
+          python -c "import zipfile,xml.etree.ElementTree as E,pathlib; p=next(pathlib.Path('outsrc').glob('*.hwpx')); z=zipfile.ZipFile(p); r=E.fromstring(z.read('Contents/section0.xml')); ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}; scripts='\\n'.join((x.text or '') for x in r.findall('.//hp:script',ns)); text='\\n'.join((x.text or '') for x in r.findall('.//hp:t',ns)); assert '[정답] ①' in text,text; assert '① -4' not in text,text; assert '(10 sqrt {3})^{2}' in scripts,scripts; assert 'rm A it' in scripts and 'rm AB it' in scripts,scripts; assert '{}_{n} rm C _{r}' in scripts,scripts; print('HWPX MERGED E2E OK')"
+
+      - name: Build Windows EXEs
+        shell: pwsh
+        run: |
+          $tpl=(Resolve-Path 'app/direct_hwpx_template.hwpx').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_HWPX_초고속_통합수식엔진 --distpath dist_onefile --workpath build_onefile --add-data "$tpl;." app/ultrafast_app.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name GPT_HWPX_초고속_FAST_통합수식엔진 --distpath dist_fast --workpath build_fast --add-data "$tpl;." app/ultrafast_app.py
+
+      - name: EXE smoke test
+        shell: pwsh
+        run: |
+          Set-Clipboard -Value '[정답] ① -4`n[해설]`n$17^2=289<300=(10\sqrt{3})^2<324=18^2$'
+          $p=Start-Process '.\dist_fast\GPT_HWPX_초고속_FAST_통합수식엔진\GPT_HWPX_초고속_FAST_통합수식엔진.exe' -ArgumentList @('--no-open') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "FAST smoke failed: $($p.ExitCode)"}
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $p=Start-Process '.\dist_onefile\GPT_HWPX_초고속_통합수식엔진.exe' -ArgumentList @('--test-input','app/sample.txt','--output-dir','out','--no-open','--validate') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "onefile exit $($p.ExitCode)"}
+          $o=Get-ChildItem 'out\*.hwpx'|Select-Object -First 1
+          Copy-Item $o.FullName 'out/GPT_HWPX_통합수식엔진_테스트.hwpx' -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_UltraFast_SetFix_Windows
+          path: |
+            dist_onefile/GPT_HWPX_초고속_통합수식엔진.exe
+            dist_fast/GPT_HWPX_초고속_FAST_통합수식엔진/**
+            out/GPT_HWPX_통합수식엔진_테스트.hwpx
+          if-no-files-found: error
+          retention-days: 7
+, '__LBRACE__':'{', '__RBRACE__':'}'}\n"
+          new="    restore = {'__PERCENT__':'%', '__AMP__':'&', '__HASH__':'#', '__UNDERSCORE__':'_', '__DOLLAR__':'
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pyinstaller pymupdf
+
+      - name: Merged math regression
+        shell: pwsh
+        run: |
+          Set-Content app/regression.py -Encoding utf8 -Value @'
+          import sys, pathlib
+          sys.path.insert(0,str(pathlib.Path(__file__).parent))
+          import ultrafast_core as c
+          tests={
+            r'(10\sqrt{3})^2':'(10 sqrt {3})^{2}',
+            r'\sqrt{3}^2':'{sqrt {3}}^{2}',
+            r"f'(x)":'f prime (x)',
+            r'\binom{n}{r}':'{}_{n} rm C _{r}',
+            r'2^{1/2}':'2^{{1} over {2}}',
+            r'n\sqrt{n}':'n sqrt {n}',
+            r'-2\le x\le \frac32':'~LEQ~',
+            r'17^2=289<300=(10\sqrt{3})^2<324=18^2':'10 sqrt {3}',
+          }
+          for src,want in tests.items():
+              got=c.latex_to_hwp(src)
+              print(src,'=>',got)
+              assert want in got,(src,got,want)
+          assert '10sqrt' not in c.latex_to_hwp(r'(10\sqrt{3})^2')
+          print('MERGED MATH REGRESSION OK')
+          set_tests={
+            r'B=\\{1,3,6\\}':['LEFT { 1,3,6 RIGHT }'],
+            r'A^c\\cup B^c=\\{1,2,4,5,6\\}':['SMALLUNION','LEFT { 1,2,4,5,6 RIGHT }'],
+            r'A^c\\cup B^c=(A\\cap B)^c':['SMALLUNION','SMALLINTER'],
+            r'3\\in A\\cap B':[' IN ','SMALLINTER'],
+            r'X\\subset U':['SUBSET'],
+            r'(B\\cup\\{x\\})-A':['SMALLUNION','LEFT { x RIGHT }'],
+          }
+          for src,wants in set_tests.items():
+              got=c.latex_to_hwp(src)
+              print('SET',src,'=>',got)
+              for want in wants:
+                  assert want in got,(src,got,want)
+          print('SET NOTATION REGRESSION OK')
+          '@
+          python app/regression.py
+          Set-Content app/sample.txt -Encoding utf8 -Value @'
+          [정답] ① -4
+          [해설]
+          여기서 $17^2=289<300=(10\sqrt{3})^2<324=18^2$ 이므로 $17<10\sqrt{3}<18$이다.
+          점 $A$와 점 $B$를 잇는 선분 $AB$를 생각한다.
+          또한 $f'(x)$, $2^{1/2}$, $\binom{n}{r}$를 확인한다.
+          '@
+          New-Item -ItemType Directory -Force -Path outsrc | Out-Null
+          Push-Location app
+          python ultrafast_app.py --test-input sample.txt --output-dir ../outsrc --no-open --validate
+          Pop-Location
+          python -c "import zipfile,xml.etree.ElementTree as E,pathlib; p=next(pathlib.Path('outsrc').glob('*.hwpx')); z=zipfile.ZipFile(p); r=E.fromstring(z.read('Contents/section0.xml')); ns={'hp':'http://www.hancom.co.kr/hwpml/2011/paragraph'}; scripts='\\n'.join((x.text or '') for x in r.findall('.//hp:script',ns)); text='\\n'.join((x.text or '') for x in r.findall('.//hp:t',ns)); assert '[정답] ①' in text,text; assert '① -4' not in text,text; assert '(10 sqrt {3})^{2}' in scripts,scripts; assert 'rm A it' in scripts and 'rm AB it' in scripts,scripts; assert '{}_{n} rm C _{r}' in scripts,scripts; print('HWPX MERGED E2E OK')"
+
+      - name: Build Windows EXEs
+        shell: pwsh
+        run: |
+          $tpl=(Resolve-Path 'app/direct_hwpx_template.hwpx').Path
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name GPT_HWPX_초고속_통합수식엔진 --distpath dist_onefile --workpath build_onefile --add-data "$tpl;." app/ultrafast_app.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name GPT_HWPX_초고속_FAST_통합수식엔진 --distpath dist_fast --workpath build_fast --add-data "$tpl;." app/ultrafast_app.py
+
+      - name: EXE smoke test
+        shell: pwsh
+        run: |
+          Set-Clipboard -Value '[정답] ① -4`n[해설]`n$17^2=289<300=(10\sqrt{3})^2<324=18^2$'
+          $p=Start-Process '.\dist_fast\GPT_HWPX_초고속_FAST_통합수식엔진\GPT_HWPX_초고속_FAST_통합수식엔진.exe' -ArgumentList @('--no-open') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "FAST smoke failed: $($p.ExitCode)"}
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $p=Start-Process '.\dist_onefile\GPT_HWPX_초고속_통합수식엔진.exe' -ArgumentList @('--test-input','app/sample.txt','--output-dir','out','--no-open','--validate') -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "onefile exit $($p.ExitCode)"}
+          $o=Get-ChildItem 'out\*.hwpx'|Select-Object -First 1
+          Copy-Item $o.FullName 'out/GPT_HWPX_통합수식엔진_테스트.hwpx' -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GPT_HWPX_UltraFast_SetFix_Windows
+          path: |
+            dist_onefile/GPT_HWPX_초고속_통합수식엔진.exe
+            dist_fast/GPT_HWPX_초고속_FAST_통합수식엔진/**
+            out/GPT_HWPX_통합수식엔진_테스트.hwpx
+          if-no-files-found: error
+          retention-days: 7
+}\n"
+          if old not in s: raise SystemExit('restore-map brace anchor missing')
+          s=s.replace(old,new,1)
+
+          anchor="    # Unknown LaTeX commands: remove leading slash but do not expose raw source.\n"
+          bare="    # Bare cup/cap from older paths must become Hancom set operators.\n    s=re.sub(r'(?i)\\bcup\\b', ' SMALLUNION ', s)\n    s=re.sub(r'(?i)\\bcap\\b', ' SMALLINTER ', s)\n\n"
+          if bare not in s:
+              if anchor not in s: raise SystemExit('bare cup cap anchor missing')
+              s=s.replace(anchor,bare+anchor,1)
+
+          old="    s=re.sub(r'(?i)LEFT|RIGHT','',s)\n"
+          if old not in s: raise SystemExit('LEFT RIGHT cleanup anchor missing')
+          s=s.replace(old,'',1)
+
+          p.write_text(s,encoding='utf-8')
+          print('SET PATCH APPLIED')
+          '@
+          python app/patch_sets.py
           python -m py_compile app/ultrafast_app.py app/ultrafast_core.py app/ultrafast_tikz.py
 
       - name: Install build dependencies
