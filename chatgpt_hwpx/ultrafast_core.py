@@ -298,6 +298,13 @@ def _latex_to_hwp_base(expr: str) -> str:
     if env is not None:
         return re.sub(r'\s+', ' ', env).strip()
 
+    # Protect VISIBLE set braces before stripping LaTeX sizing commands.
+    # In Hancom equation script, raw { } are grouping braces and are not displayed.
+    # Visible set braces must be emitted as: left lbrace ... right rbrace.
+    s = re.sub(r'\\left\s*\\\{', ' ZZSETLZZ ', s)
+    s = re.sub(r'\\right\s*\\\}', ' ZZSETRZZ ', s)
+    s = s.replace(r'\{', ' ZZSETLZZ ').replace(r'\}', ' ZZSETRZZ ')
+
     # Protect escaped literal characters before generic command processing.
     placeholders = {
         r'\%': '__PERCENT__', r'\&': '__AMP__', r'\#': '__HASH__', r'\_': '__UNDERSCORE__',
@@ -426,7 +433,6 @@ def _latex_to_hwp_base(expr: str) -> str:
     # LaTeX delimiters and scalable bars.
     s=s.replace(r'\lvert',' | ').replace(r'\rvert',' | ')
     s=s.replace(r'\lVert',' || ').replace(r'\rVert',' || ')
-    s=s.replace(r'\{',' LEFT { ').replace(r'\}',' RIGHT } ')
     s=s.replace(r'\(','(').replace(r'\)',')').replace(r'\[','[').replace(r'\]',']')
 
     # Superscripts/subscripts with balanced groups.
@@ -462,6 +468,7 @@ def _latex_to_hwp_base(expr: str) -> str:
     # Restore escaped literals.
     restore = {'__PERCENT__':'%', '__AMP__':'&', '__HASH__':'#', '__UNDERSCORE__':'_', '__DOLLAR__':'$', '__LBRACE__':'{', '__RBRACE__':'}'}
     for k,v in restore.items(): s=s.replace(k,v)
+    s=s.replace('ZZSETLZZ', ' left lbrace ').replace('ZZSETRZZ', ' right rbrace ')
 
     # Normalize unbraced/malformed blackboard-bold forms before unknown-command cleanup.
     # \\mathbb R / \\mathbbR -> R (same for other single letters).
@@ -469,7 +476,7 @@ def _latex_to_hwp_base(expr: str) -> str:
     s=re.sub(r'\\mathbb([A-Za-z])\b', r'\1', s)
 
     # If an upstream stage already emitted stray W brace markers, normalize them.
-    s=s.replace('W{', ' lbrace ').replace('W}', ' rbrace ')
+    s=s.replace('W{', ' left lbrace ').replace('W}', ' right rbrace ')
     # Unknown LaTeX commands: remove leading slash but do not expose raw source.
     s=re.sub(r'\\([A-Za-z]+)', r'\1', s)
     s=s.replace('\\\\',' # ')
@@ -756,18 +763,13 @@ def build_section(template_xml: bytes, text: str) -> bytes:
             add_text_run(p,' ')
             continue
         if kind=='display_math':
-            if is_simple_set_literal_math(data):
-                add_text_run(p,set_literal_to_text(data))
-            else:
-                script=latex_to_hwp(romanize_math_labels(data))
-                add_equation_run(p,script,eq_id,z,'1150'); eq_id+=1; z+=1
+            script=latex_to_hwp(romanize_math_labels(data))
+            add_equation_run(p,script,eq_id,z,'1150'); eq_id+=1; z+=1
             continue
         if kind in ('paragraph','heading'):
             if kind=='heading': add_text_run(p,'')
             for typ,val in data:
                 if typ=='text': add_text_run(p,val)
-                elif is_simple_set_literal_math(val):
-                    add_text_run(p,set_literal_to_text(val))
                 else:
                     script=latex_to_hwp(romanize_math_labels(val))
                     add_equation_run(p,script,eq_id,z); eq_id+=1; z+=1
