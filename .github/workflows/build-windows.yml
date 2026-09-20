@@ -55,7 +55,11 @@ jobs:
           찌꺼기 테스트 $(B \cup W{xW})-A=W{1,6,xW}$.
           '@ | Set-Content -Path ".\test_input.txt" -Encoding utf8
           New-Item -ItemType Directory -Force -Path ".\test_out" | Out-Null
-          $p = Start-Process -FilePath ".\dist\GPT_HWPX_통합수식엔진.exe" -ArgumentList @("--test-input",".\test_input.txt","--output-dir",".\test_out","--no-open","--validate") -Wait -PassThru
+          $p = Start-Process -FilePath ".\dist\GPT_HWPX_통합수식엔진.exe" -ArgumentList @("--test-input",".\test_input.txt","--output-dir",".\test_out","--no-open","--validate") -PassThru
+          if (-not $p.WaitForExit(60000)) {
+            Stop-Process -Id $p.Id -Force
+            throw "EXE smoke test timed out"
+          }
           if ($p.ExitCode -ne 0) { throw "EXE smoke test failed: $($p.ExitCode)" }
           $hwpx = Get-ChildItem ".\test_out\*.hwpx" | Select-Object -First 1
           if (-not $hwpx) { throw "No HWPX generated" }
@@ -112,3 +116,5 @@ jobs:
           path: chatgpt_hwpx/artifact/*
           if-no-files-found: error
           retention-days: 30
+
+# rebuild-trigger: app-smoke-timeout
