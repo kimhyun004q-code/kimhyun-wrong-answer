@@ -3,7 +3,7 @@ name: Build GPT HWPX UltraFast SetFix
 on:
   push:
     branches: [chatgpt-hwpx-setfix-build-20260920]
-    paths: ['.github/workflows/build-gpt-to-hwpx-ultrafast-merged-antigravity.yml']
+    paths: ['.github/workflows/build-gpt-to-hwpx-ultrafast-merged-antigravity.yml', 'setfix_patch.py', 'setfix_regression.py']
   workflow_dispatch:
 
 jobs:
@@ -148,8 +148,21 @@ jobs:
           p.write_text(s,encoding='utf-8')
           '@
           python app/patch_all.py
-          python setfix_patch.py
           python -m py_compile app/ultrafast_app.py app/ultrafast_core.py app/ultrafast_tikz.py
+
+      - name: Apply set notation fix
+        shell: pwsh
+        run: |
+          python setfix_patch.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m py_compile app/ultrafast_core.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Set notation regression
+        shell: pwsh
+        run: |
+          python setfix_regression.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install build dependencies
         run: python -m pip install --upgrade pyinstaller pymupdf
@@ -179,7 +192,6 @@ jobs:
           print('MERGED MATH REGRESSION OK')
           '@
           python app/regression.py
-          python setfix_regression.py
           Set-Content app/sample.txt -Encoding utf8 -Value @'
           [정답] ① -4
           [해설]
