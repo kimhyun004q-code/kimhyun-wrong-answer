@@ -54,8 +54,8 @@ jobs:
           찌꺼기 테스트 $(B \cup W{xW})-A=W{1,6,xW}$.
           '@ | Set-Content -Path ".\test_input.txt" -Encoding utf8
           New-Item -ItemType Directory -Force -Path ".\test_out" | Out-Null
-          & ".\dist\GPT_HWPX_통합수식엔진.exe" --test-input ".\test_input.txt" --output-dir ".\test_out" --no-open --validate
-          if ($LASTEXITCODE -ne 0) { throw "EXE smoke test failed: $LASTEXITCODE" }
+          $p = Start-Process -FilePath ".\dist\GPT_HWPX_통합수식엔진.exe" -ArgumentList @("--test-input",".\test_input.txt","--output-dir",".\test_out","--no-open","--validate") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "EXE smoke test failed: $($p.ExitCode)" }
           $hwpx = Get-ChildItem ".\test_out\*.hwpx" | Select-Object -First 1
           if (-not $hwpx) { throw "No HWPX generated" }
 
