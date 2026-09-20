@@ -1,13 +1,13 @@
-name: Build Windows EXE
+name: Build ChatGPT HWPX EXE
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches:
+      - chatgpt-build-hwpx-20260920
     paths:
-      - "src/**"
-      - "requirements.txt"
+      - "chatgpt_hwpx/**"
       - ".github/workflows/build-windows.yml"
+  workflow_dispatch:
 
 jobs:
   build:
@@ -17,44 +17,85 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
 
-      - name: Install dependencies
+      - name: Install PyInstaller
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install pyinstaller
 
-      - name: Build single EXE
+      - name: Restore HWPX template
         shell: pwsh
+        working-directory: chatgpt_hwpx
         run: |
-          pyinstaller `
-            --noconfirm `
-            --clean `
-            --onefile `
-            --windowed `
-            --name "김현수학_개인별오답생성기_HWPX초고속" `
-            --collect-all tkinterdnd2 `
-            --hidden-import lxml.etree `
-            --paths src `
-            src/app.py
+          $b64 = (Get-Content ".\direct_hwpx_template.b64.txt" -Raw).Trim()
+          [IO.File]::WriteAllBytes(".\direct_hwpx_template.hwpx", [Convert]::FromBase64String($b64))
+          if (-not (Test-Path ".\direct_hwpx_template.hwpx")) { throw "Template restore failed" }
 
-      - name: Verify EXE
+      - name: Build EXE from source
         shell: pwsh
+        working-directory: chatgpt_hwpx
         run: |
-          $exe = "dist\김현수학_개인별오답생성기_HWPX초고속.exe"
-          if (-not (Test-Path $exe)) { throw "EXE build missing" }
-          Get-Item $exe | Format-List Name,Length,LastWriteTime
-          Get-FileHash $exe -Algorithm SHA256
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "GPT_HWPX_통합수식엔진" --add-data "direct_hwpx_template.hwpx;." ultrafast_app.py
+          if (-not (Test-Path ".\dist\GPT_HWPX_통합수식엔진.exe")) { throw "EXE build missing" }
 
-      - name: Upload EXE artifact
-        uses: actions/upload-artifact@v4
+      - name: Smoke test EXE
+        shell: pwsh
+        working-directory: chatgpt_hwpx
+        run: |
+          @'
+          [정답] ①
+          [해설]
+          집합 테스트 $S=\{1.5,\,3.5,\,6,\,8,\,9\}$.
+          찌꺼기 테스트 $(B \cup W{xW})-A=W{1,6,xW}$.
+          '@ | Set-Content -Path ".\test_input.txt" -Encoding utf8
+          New-Item -ItemType Directory -Force -Path ".\test_out" | Out-Null
+          & ".\dist\GPT_HWPX_통합수식엔진.exe" --test-input ".\test_input.txt" --output-dir ".\test_out" --no-open --validate
+          if ($LASTEXITCODE -ne 0) { throw "EXE smoke test failed: $LASTEXITCODE" }
+          $hwpx = Get-ChildItem ".\test_out\*.hwpx" | Select-Object -First 1
+          if (-not $hwpx) { throw "No HWPX generated" }
+
+      - name: Validate W cleanup and set text
+        shell: pwsh
+        working-directory: chatgpt_hwpx
+        run: |
+          @'
+          import zipfile, pathlib, sys
+          files=list(pathlib.Path("test_out").glob("*.hwpx"))
+          if not files:
+              raise SystemExit("no hwpx")
+          with zipfile.ZipFile(files[0]) as z:
+              txt="\n".join(
+                  z.read(n).decode("utf-8","ignore")
+                  for n in z.namelist()
+                  if n.endswith(".xml") or n.endswith(".hpf")
+              )
+          if "W{" in txt or "W}" in txt:
+              raise SystemExit("stray W brace marker remains")
+          if "1.5" not in txt or "3.5" not in txt or "1,6,x" not in txt.replace(" ",""):
+              raise SystemExit("set literal text missing")
+          print("smoke validation ok")
+          '@ | python -
+
+      - name: Package artifact
+        shell: pwsh
+        working-directory: chatgpt_hwpx
+        run: |
+          New-Item -ItemType Directory -Force -Path ".\artifact" | Out-Null
+          Copy-Item ".\dist\GPT_HWPX_통합수식엔진.exe" ".\artifact\GPT_HWPX_통합수식엔진.exe"
+          Copy-Item ".\ultrafast_app.py" ".\artifact\ultrafast_app.py"
+          Copy-Item ".\ultrafast_core.py" ".\artifact\ultrafast_core.py"
+          Copy-Item ".\ultrafast_tikz.py" ".\artifact\ultrafast_tikz.py"
+          Copy-Item (Get-ChildItem ".\test_out\*.hwpx" | Select-Object -First 1).FullName ".\artifact\검증용_집합표기.hwpx"
+          Get-FileHash ".\artifact\GPT_HWPX_통합수식엔진.exe" -Algorithm SHA256
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: kimhyun-wrong-answer-hwpx-fast
-          path: dist/김현수학_개인별오답생성기_HWPX초고속.exe
+          name: GPT_HWPX_통합수식엔진_20260920
+          path: chatgpt_hwpx/artifact/*
           if-no-files-found: error
           retention-days: 30
