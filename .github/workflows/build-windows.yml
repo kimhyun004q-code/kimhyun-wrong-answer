@@ -34,16 +34,21 @@ jobs:
         run: |
           $b64 = (Get-Content ".\direct_hwpx_template.b64.txt" -Raw).Trim()
           [IO.File]::WriteAllBytes(".\direct_hwpx_template.hwpx", [Convert]::FromBase64String($b64))
-          if (-not (Test-Path ".\direct_hwpx_template.hwpx")) { throw "Template restore failed" }
 
-      - name: Build EXE from source
+      - name: Build final windowed EXE
         shell: pwsh
         working-directory: chatgpt_hwpx
         run: |
           python -m PyInstaller --noconfirm --clean --onefile --windowed --name "GPT_HWPX_통합수식엔진" --add-data "direct_hwpx_template.hwpx;." ultrafast_app.py
-          if (-not (Test-Path ".\dist\GPT_HWPX_통합수식엔진.exe")) { throw "EXE build missing" }
+          if (-not (Test-Path ".\dist\GPT_HWPX_통합수식엔진.exe")) { throw "final EXE missing" }
 
-      - name: Smoke test EXE
+      - name: Build console smoke-test EXE
+        shell: pwsh
+        working-directory: chatgpt_hwpx
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --console --name "GPT_HWPX_SMOKE" --add-data "direct_hwpx_template.hwpx;." ultrafast_app.py
+
+      - name: Execute conversion smoke test
         shell: pwsh
         working-directory: chatgpt_hwpx
         run: |
@@ -55,50 +60,39 @@ jobs:
           찌꺼기 테스트 $(B \cup W{xW})-A=W{1,6,xW}$.
           '@ | Set-Content -Path ".\test_input.txt" -Encoding utf8
           New-Item -ItemType Directory -Force -Path ".\test_out" | Out-Null
-          $p = Start-Process -FilePath ".\dist\GPT_HWPX_통합수식엔진.exe" -ArgumentList @("--test-input",".\test_input.txt","--output-dir",".\test_out","--no-open","--validate") -PassThru
-          if (-not $p.WaitForExit(60000)) {
-            Stop-Process -Id $p.Id -Force
-            throw "EXE smoke test timed out"
-          }
-          if ($p.ExitCode -ne 0) { throw "EXE smoke test failed: $($p.ExitCode)" }
-          $hwpx = Get-ChildItem ".\test_out\*.hwpx" | Select-Object -First 1
-          if (-not $hwpx) { throw "No HWPX generated" }
+          & ".\dist\GPT_HWPX_SMOKE.exe" --test-input ".\test_input.txt" --output-dir ".\test_out" --no-open --validate
+          if ($LASTEXITCODE -ne 0) { throw "conversion smoke test failed: $LASTEXITCODE" }
+          if (-not (Get-ChildItem ".\test_out\*.hwpx" | Select-Object -First 1)) { throw "No HWPX generated" }
 
-      - name: Verify PyMuPDF is bundled for TikZ PNG conversion
+      - name: Verify final EXE contains PyMuPDF
         shell: pwsh
         working-directory: chatgpt_hwpx
         env:
           PYTHONIOENCODING: utf-8
         run: |
-          python -m PyInstaller.utils.cliutils.archive_viewer -l ".\dist\GPT_HWPX_통합수식엔진.exe" | Out-File -FilePath ".\archive_list.txt" -Encoding utf8
+          python -m PyInstaller.utils.cliutils.archive_viewer -l ".\dist\GPT_HWPX_통합수식엔진.exe" | Out-File ".\archive_list.txt" -Encoding utf8
           $a = Get-Content ".\archive_list.txt" -Raw
-          if ($a -notmatch "pymupdf") { throw "PyMuPDF not bundled; TikZ PNG conversion would fail" }
+          if ($a -notmatch "pymupdf") { throw "PyMuPDF missing from final EXE" }
 
-      - name: Validate set equations and W cleanup
+      - name: Validate set notation is HWP equation
         shell: pwsh
         working-directory: chatgpt_hwpx
         run: |
           @'
           import zipfile, pathlib, re
-          files=list(pathlib.Path("test_out").glob("*.hwpx"))
-          if not files:
-              raise SystemExit("no hwpx")
-          with zipfile.ZipFile(files[0]) as z:
+          f=next(pathlib.Path("test_out").glob("*.hwpx"))
+          with zipfile.ZipFile(f) as z:
               sec=z.read("Contents/section0.xml").decode("utf-8","ignore")
-          if "W{" in sec or "W}" in sec:
-              raise SystemExit("stray W brace marker remains")
-          scripts=re.findall(r"<hp:script>(.*?)</hp:script>", sec, flags=re.S)
-          compact=["".join(x.split()) for x in scripts]
-          if not any("leftlbrace1.5" in x and "9rightrbrace" in x for x in compact):
-              raise SystemExit("set S is not encoded as HWP equation with visible braces")
-          if not any("B~=~leftlbrace1,3,6rightrbrace" in x for x in compact):
-              raise SystemExit("set B is not encoded as HWP equation with visible braces")
-          if not any("leftlbrace1,6,xrightrbrace" in x for x in compact):
-              raise SystemExit("W cleanup set braces failed")
-          print("set equation validation ok")
+          scripts=re.findall(r"<hp:script>(.*?)</hp:script>",sec,flags=re.S)
+          c=["".join(x.split()) for x in scripts]
+          assert any("S~=~leftlbrace1.5" in x and "9rightrbrace" in x for x in c), c
+          assert any("B~=~leftlbrace1,3,6rightrbrace" in x for x in c), c
+          assert any("leftlbrace1,6,xrightrbrace" in x for x in c), c
+          assert "W{" not in sec and "W}" not in sec
+          print("equation-set validation OK")
           '@ | python -
 
-      - name: Package artifact
+      - name: Package final artifact
         shell: pwsh
         working-directory: chatgpt_hwpx
         run: |
@@ -108,7 +102,6 @@ jobs:
           Copy-Item ".\ultrafast_core.py" ".\artifact\ultrafast_core.py"
           Copy-Item ".\ultrafast_tikz.py" ".\artifact\ultrafast_tikz.py"
           Copy-Item (Get-ChildItem ".\test_out\*.hwpx" | Select-Object -First 1).FullName ".\artifact\검증용_집합수식.hwpx"
-          Get-FileHash ".\artifact\GPT_HWPX_통합수식엔진.exe" -Algorithm SHA256
 
       - uses: actions/upload-artifact@v4
         with:
@@ -116,5 +109,3 @@ jobs:
           path: chatgpt_hwpx/artifact/*
           if-no-files-found: error
           retention-days: 30
-
-# rebuild-trigger: app-smoke-timeout
