@@ -17,6 +17,8 @@ def latex_to_hwp(expr: str) -> str:
     out = _latex_to_hwp_before_setfix(expr)
     out = out.replace('__{LBRACE}__', ' LEFT { ')
     out = out.replace('__{RBRACE}__', ' RIGHT } ')
+    out = re.sub(r'(?i)\\bUNION\\b', ' SMALLUNION ', out)
+    out = re.sub(r'(?i)\\bINTER\\b', ' SMALLINTER ', out)
     out = re.sub(r'(?i)\\bcup\\b', ' SMALLUNION ', out)
     out = re.sub(r'(?i)\\bcap\\b', ' SMALLINTER ', out)
     out = re.sub(r'(?i)\\bsetminus\\b', ' - ', out)
