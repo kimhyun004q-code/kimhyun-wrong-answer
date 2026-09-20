@@ -26,7 +26,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pyinstaller
+          python -m pip install pyinstaller pymupdf
 
       - name: Restore HWPX template
         shell: pwsh
@@ -59,7 +59,15 @@ jobs:
           $hwpx = Get-ChildItem ".\test_out\*.hwpx" | Select-Object -First 1
           if (-not $hwpx) { throw "No HWPX generated" }
 
-      - name: Validate W cleanup and set text
+      - name: Verify PyMuPDF is bundled for TikZ PNG conversion
+        shell: pwsh
+        working-directory: chatgpt_hwpx
+        run: |
+          python -m PyInstaller.utils.cliutils.archive_viewer -l ".\\dist\\GPT_HWPX_통합수식엔진.exe" | Out-File -FilePath ".\\archive_list.txt" -Encoding utf8
+          $a = Get-Content ".\\archive_list.txt" -Raw
+          if ($a -notmatch "fitz|pymupdf") { throw "PyMuPDF/fitz not bundled; TikZ PNG conversion would fail" }
+
+      - name: Validate set equations and W cleanup
         shell: pwsh
         working-directory: chatgpt_hwpx
         run: |
@@ -76,9 +84,14 @@ jobs:
               )
           if "W{" in txt or "W}" in txt:
               raise SystemExit("stray W brace marker remains")
-          if "1.5" not in txt or "3.5" not in txt or "1,6,x" not in txt.replace(" ",""):
-              raise SystemExit("set literal text missing")
-          print("smoke validation ok")
+          if "<hp:equation" not in txt:
+              raise SystemExit("math was not emitted as HWP equation objects")
+          compact=txt.replace(" ","")
+          if "leftlbrace1.5" not in compact or "9rightrbrace" not in compact:
+              raise SystemExit("set S braces are not encoded as visible HWP equation braces")
+          if "leftlbrace1,6,xrightrbrace" not in compact:
+              raise SystemExit("W cleanup set braces failed")
+          print("set equation validation ok")
           '@ | python -
 
       - name: Package artifact
