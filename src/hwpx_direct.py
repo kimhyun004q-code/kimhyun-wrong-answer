@@ -418,14 +418,14 @@ def _append_cover(
     round_text = (round_name or "").strip() or "-"
     exam_date = (test_date or "").strip() or "-"
 
-    root.append(_cover_para(f"반명  {class_text}", styles, "info"))
-    root.append(_cover_para(f"회차  {round_text}", styles, "info"))
-    root.append(_cover_para(f"시험응시일  {exam_date}", styles, "info"))
+    root.append(_cover_para(f"{student}(오답노트)", styles, "student"))
 
     for _ in range(2):
         root.append(_cover_para("", styles, "spacer"))
 
-    root.append(_cover_para(f"{student}(오답노트)", styles, "student"))
+    root.append(_cover_para(f"반명  {class_text}", styles, "info"))
+    root.append(_cover_para(f"회차  {round_text}", styles, "info"))
+    root.append(_cover_para(f"시험응시일  {exam_date}", styles, "info"))
 
     for _ in range(2):
         root.append(_cover_para("", styles, "spacer"))
