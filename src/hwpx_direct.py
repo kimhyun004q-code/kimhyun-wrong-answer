@@ -134,12 +134,12 @@ def _build_cover_header(header_bytes: bytes, choice_source_para_pr: str | None =
         next_char += 1
     chars.set("itemCnt", str(len(list(chars))))
 
-    # 원본 시험지의 문단 간격이나 글자 격자 설정에 의존하지 않도록 유형별 줄 높이를 고정한다.
+    # 표지 항목 사이 간격을 더 넉넉하게 하고, 원본 시험지의 문단 간격/글자 격자에 의존하지 않도록 줄 높이를 고정한다.
     para_specs = [
-        ("para_spacer", 1200),
-        ("para_student", 5000),
-        ("para_info", 3400),
-        ("para_slogan", 3300),
+        ("para_spacer", 1900),
+        ("para_student", 5600),
+        ("para_info", 3900),
+        ("para_slogan", 3700),
     ]
     for key, min_line_height in para_specs:
         pp = deepcopy(base_para)
