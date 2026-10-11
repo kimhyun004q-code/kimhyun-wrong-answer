@@ -114,12 +114,14 @@ def _build_cover_header(header_bytes: bytes, choice_source_para_pr: str | None =
 
     ids: dict[str, str] = {}
     next_char = _next_id(chars)
+    # 표지 글꼴은 큰 글자 크기를 사용하므로, 한글 2020에서도 줄이 겹치지 않도록
+    # 글자 크기와 줄 높이를 함께 조정하고 문단별 줄 간격을 명시한다.
     char_specs = [
         ("spacer", 700),
         ("question_top_spacer", QUESTION_TOP_SPACER_HEIGHT),
-        ("info", 3200),
-        ("student", 4500),
-        ("slogan", 3400),
+        ("info", 2700),
+        ("student", 4200),
+        ("slogan", 2600),
     ]
     for key, height in char_specs:
         cp = deepcopy(base_char)
@@ -132,21 +134,43 @@ def _build_cover_header(header_bytes: bytes, choice_source_para_pr: str | None =
         next_char += 1
     chars.set("itemCnt", str(len(list(chars))))
 
-    pp = deepcopy(base_para)
-    para_id = _next_id(paras)
-    pp.set("id", str(para_id))
-    pp.set("snapToGrid", "0")
-    align = None
-    for child in pp:
-        if etree.QName(child).localname == "align":
-            align = child
-            break
-    if align is None:
-        align = etree.SubElement(pp, f"{{{HP}}}align")
-    align.set("horizontal", "CENTER")
-    align.set("vertical", "BASELINE")
-    paras.append(pp)
-    ids["para_center"] = str(para_id)
+    # 원본 시험지의 문단 간격이나 글자 격자 설정에 의존하지 않도록 유형별 줄 높이를 고정한다.
+    para_specs = [
+        ("para_spacer", 1200),
+        ("para_student", 5000),
+        ("para_info", 3400),
+        ("para_slogan", 3300),
+    ]
+    for key, min_line_height in para_specs:
+        pp = deepcopy(base_para)
+        para_id = _next_id(paras)
+        pp.set("id", str(para_id))
+        pp.set("snapToGrid", "0")
+
+        align = None
+        for child in pp:
+            if etree.QName(child).localname == "align":
+                align = child
+                break
+        if align is None:
+            align = etree.SubElement(pp, f"{{{HP}}}align")
+        align.set("horizontal", "CENTER")
+        align.set("vertical", "BASELINE")
+
+        for node in pp.iter():
+            local = etree.QName(node).localname
+            if local == "lineSpacing":
+                node.set("type", "AT_LEAST")
+                node.set("unit", "HWPUNIT")
+                node.set("value", str(min_line_height))
+            elif local in {"intent", "left", "right", "prev", "next"} and node.get("unit") == "HWPUNIT":
+                node.set("value", "0")
+
+        paras.append(pp)
+        ids[key] = str(para_id)
+
+    # 이전 코드와의 호환을 위해 기본 중앙 정렬 스타일 이름도 유지한다.
+    ids["para_center"] = ids["para_info"]
 
     if choice_source_para_pr:
         choice_source = _find_id(paras, choice_source_para_pr)
@@ -396,7 +420,8 @@ def _label_para(
 
 
 def _cover_para(text: str, styles: dict[str, str], kind: str):
-    return _label_para(styles["para_center"], styles[kind], text)
+    para_style = styles.get(f"para_{kind}", styles["para_center"])
+    return _label_para(para_style, styles[kind], text)
 
 
 def _append_cover(
