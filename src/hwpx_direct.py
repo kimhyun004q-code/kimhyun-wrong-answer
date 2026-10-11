@@ -117,7 +117,8 @@ def _build_cover_header(header_bytes: bytes, choice_source_para_pr: str | None =
     # 표지 글꼴은 큰 글자 크기를 사용하므로, 한글 2020에서도 줄이 겹치지 않도록
     # 글자 크기와 줄 높이를 함께 조정하고 문단별 줄 간격을 명시한다.
     char_specs = [
-        ("spacer", 700),
+        # 빈 문단도 160% 줄 간격을 적용했을 때 충분한 높이를 확보하도록 높이를 키운다.
+        ("spacer", 2000),
         ("question_top_spacer", QUESTION_TOP_SPACER_HEIGHT),
         ("info", 2700),
         ("student", 4200),
@@ -134,14 +135,15 @@ def _build_cover_header(header_bytes: bytes, choice_source_para_pr: str | None =
         next_char += 1
     chars.set("itemCnt", str(len(list(chars))))
 
-    # 표지 항목 사이 간격을 더 넉넉하게 하고, 원본 시험지의 문단 간격/글자 격자에 의존하지 않도록 줄 높이를 고정한다.
+    # 표지 문단은 원본 설정과 무관하게 줄 간격 160%를 사용한다.
+    # spacer는 빈 문단이므로 글자 높이도 키워 페이지 세로 높이의 60% 이상을 확보한다.
     para_specs = [
-        ("para_spacer", 1900),
-        ("para_student", 5600),
-        ("para_info", 3900),
-        ("para_slogan", 3700),
+        "para_spacer",
+        "para_student",
+        "para_info",
+        "para_slogan",
     ]
-    for key, min_line_height in para_specs:
+    for key in para_specs:
         pp = deepcopy(base_para)
         para_id = _next_id(paras)
         pp.set("id", str(para_id))
@@ -157,13 +159,20 @@ def _build_cover_header(header_bytes: bytes, choice_source_para_pr: str | None =
         align.set("horizontal", "CENTER")
         align.set("vertical", "BASELINE")
 
+        line_spacing_nodes = [
+            node for node in pp.iter()
+            if etree.QName(node).localname == "lineSpacing"
+        ]
+        if not line_spacing_nodes:
+            line_spacing_nodes = [etree.SubElement(pp, f"{{{HP}}}lineSpacing")]
+        for node in line_spacing_nodes:
+            node.set("type", "PERCENT")
+            node.set("unit", "HWPUNIT")
+            node.set("value", "160")
+
         for node in pp.iter():
             local = etree.QName(node).localname
-            if local == "lineSpacing":
-                node.set("type", "AT_LEAST")
-                node.set("unit", "HWPUNIT")
-                node.set("value", str(min_line_height))
-            elif local in {"intent", "left", "right", "prev", "next"} and node.get("unit") == "HWPUNIT":
+            if local in {"intent", "left", "right", "prev", "next"} and node.get("unit") == "HWPUNIT":
                 node.set("value", "0")
 
         paras.append(pp)
@@ -436,7 +445,7 @@ def _append_cover(
 ) -> None:
     root.append(deepcopy(cover_template))
 
-    for _ in range(3):
+    for _ in range(4):
         root.append(_cover_para("", styles, "spacer"))
 
     class_text = (class_name or "").strip() or "-"
@@ -445,14 +454,14 @@ def _append_cover(
 
     root.append(_cover_para(f"{student}(오답노트)", styles, "student"))
 
-    for _ in range(2):
+    for _ in range(3):
         root.append(_cover_para("", styles, "spacer"))
 
     root.append(_cover_para(f"반명  {class_text}", styles, "info"))
     root.append(_cover_para(f"회차  {round_text}", styles, "info"))
     root.append(_cover_para(f"시험응시일  {exam_date}", styles, "info"))
 
-    for _ in range(2):
+    for _ in range(3):
         root.append(_cover_para("", styles, "spacer"))
 
     root.append(_cover_para("성적이 오르는 신뢰의 이름 김현수학", styles, "slogan"))
